@@ -1,746 +1,332 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:tomate_detection_app/core/constants/app_constants.dart';
 import 'package:tomate_detection_app/core/services/database_service.dart';
+import 'package:tomate_detection_app/core/theme/theme_controller.dart';
 
 class AnalyticsPage extends StatefulWidget {
   const AnalyticsPage({super.key});
-
   @override
   State<AnalyticsPage> createState() => _AnalyticsPageState();
 }
 
 class _AnalyticsPageState extends State<AnalyticsPage> {
-  final DatabaseService _dbService = DatabaseService();
-  
-  bool _isLoading = true;
-  int _totalDiagnostics = 0;
-  int _diseaseCount = 0;
-  int _healthyCount = 0;
-  Map<String, int> _diseaseStats = {};
-  String _selectedFilter = 'Todos';
-  String _selectedPeriod = 'Semana';
-  final List<String> _periods = ['Semana', 'Mes', 'Temporada'];
-
-  final Map<String, String> _classDisplayNames = {
-    'mildiu': 'Mildiu Velloso',
-    'mosca_blanca': 'Mosca Blanca',
-    'oidio': 'Cenicilla/Oidio',
-    'polilla': 'Polilla del Tomate',
-    'sana': 'Hoja Sana',
-  };
-
-  final Map<String, Color> _classColors = {
-    'mildiu': const Color(0xFFFF6B35),
-    'mosca_blanca': const Color(0xFFFF6B9D),
-    'oidio': const Color(0xFFF9A825),
-    'polilla': const Color(0xFFE53935),
-    'sana': const Color(0xFF43A047),
-  };
-
-  final List<String> _filterOptions = [
-    'Todos',
-    'mildiu',
-    'mosca_blanca',
-    'oidio',
-    'polilla',
-    'sana',
-  ];
+  final _db = DatabaseService();
+  bool _loading = true;
+  int _total = 0, _disease = 0, _healthy = 0;
+  Map<String,int> _stats = {};
+  String _period = "Este Mes";
+  final _periods = ["Semana","Este Mes","Campaña 2026"];
 
   @override
-  void initState() {
-    super.initState();
-    _loadData();
-  }
-
-  Future<void> _loadData() async {
-    setState(() => _isLoading = true);
-    
-    try {
-      _totalDiagnostics = await _dbService.getTotalDiagnostics();
-      _diseaseCount = await _dbService.getDiseaseCount();
-      _healthyCount = await _dbService.getHealthyCount();
-      _diseaseStats = await _dbService.getDiseaseStats();
-    } catch (e) {
-      debugPrint('❌ Error cargando datos: $e');
-    }
-    
-    setState(() => _isLoading = false);
+  void initState(){ super.initState(); _load(); }
+  Future<void> _load() async {
+    setState(()=> _loading=true);
+    try{
+      _total=await _db.getTotalDiagnostics();
+      _disease=await _db.getDiseaseCount();
+      _healthy=await _db.getHealthyCount();
+      _stats=await _db.getDiseaseStats();
+    }catch(_){}
+    setState(()=> _loading=false);
   }
 
   @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF5F7FA),
-      body: SafeArea(
-        child: _isLoading
-            ? const Center(
-                child: CircularProgressIndicator(
-                  valueColor: AlwaysStoppedAnimation<Color>(AppColors.primaryEmerald),
-                ),
-              )
-            : RefreshIndicator(
-                onRefresh: _loadData,
-                color: AppColors.primaryEmerald,
-                child: SingleChildScrollView(
-                  physics: const AlwaysScrollableScrollPhysics(),
-                  padding: const EdgeInsets.only(bottom: 16),
-                  child: Column(
-                    children: [
-                      _buildHeader(),
-                      const SizedBox(height: 16),
-                      _buildPeriodSelector(),
-                      const SizedBox(height: 16),
-                      _buildMetricsGrid(),
-                      const SizedBox(height: 16),
-                      _buildPrimaryThreat(),
-                      const SizedBox(height: 16),
-                      _buildTrendChart(),
-                      const SizedBox(height: 16),
-                      _buildDistributionAndRecommendation(),
-                      const SizedBox(height: 16),
-                      _buildFieldImage(),
-                    ],
-                  ),
-                ),
-              ),
-      ),
-    );
-  }
-
-  // =====================================================
-  // HEADER
-  // =====================================================
-  Widget _buildHeader() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Row(
-            children: [
-              Icon(
-                Icons.agriculture_rounded,
-                color: AppColors.primaryEmerald,
-                size: 28,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                'Crop Analytics',
-                style: GoogleFonts.poppins(
-                  fontSize: 24,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.primaryEmerald,
-                ),
-              ),
-            ],
-          ),
-          Container(
-            padding: const EdgeInsets.all(8),
-            decoration: BoxDecoration(
-              color: Colors.grey.shade100,
-              borderRadius: BorderRadius.circular(12),
-            ),
-            child: Icon(
-              Icons.settings_rounded,
-              color: Colors.grey.shade600,
-              size: 24,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // =====================================================
-  // SELECTOR DE PERÍODO
-  // =====================================================
-  Widget _buildPeriodSelector() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Container(
-        padding: const EdgeInsets.all(4),
-        decoration: BoxDecoration(
-          color: Colors.grey.shade100,
-          borderRadius: BorderRadius.circular(24),
-        ),
-        child: Row(
-          children: _periods.map((period) {
-            final isSelected = _selectedPeriod == period;
-            return Expanded(
-              child: GestureDetector(
-                onTap: () {
-                  setState(() => _selectedPeriod = period);
-                },
-                child: Container(
-                  padding: const EdgeInsets.symmetric(vertical: 10),
-                  decoration: BoxDecoration(
-                    color: isSelected ? AppColors.primaryEmerald : Colors.transparent,
-                    borderRadius: BorderRadius.circular(20),
-                    boxShadow: isSelected
-                        ? [
-                            BoxShadow(
-                              color: AppColors.primaryEmerald.withValues(alpha: 0.3),
-                              blurRadius: 12,
-                              offset: const Offset(0, 4),
-                            ),
-                          ]
-                        : null,
-                  ),
-                  child: Text(
-                    period,
-                    textAlign: TextAlign.center,
-                    style: GoogleFonts.poppins(
-                      fontSize: 14,
-                      fontWeight: isSelected ? FontWeight.w600 : FontWeight.w400,
-                      color: isSelected ? Colors.white : Colors.grey.shade600,
-                    ),
-                  ),
-                ),
-              ),
-            );
-          }).toList(),
-        ),
-      ),
-    );
-  }
-
-  // =====================================================
-  // MÉTRICAS (Bento Grid)
-  // =====================================================
-  Widget _buildMetricsGrid() {
-    final avgHealth = _totalDiagnostics > 0
-        ? ((_healthyCount / _totalDiagnostics) * 100).toInt()
-        : 0;
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Row(
-        children: [
-          Expanded(
-            child: _buildMetricCard(
-              icon: Icons.qr_code_scanner_rounded,
-              value: '$_totalDiagnostics',
-              label: 'Total Scans',
-              trend: '+12%',
-              color: AppColors.primaryEmerald,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: _buildMetricCard(
-              icon: Icons.health_and_safety_rounded,
-              value: '$avgHealth%',
-              label: 'Avg. Health',
-              trend: '',
-              color: avgHealth > 70 ? Colors.green.shade600 : Colors.orange.shade600,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildMetricCard({
-    required IconData icon,
-    required String value,
-    required String label,
-    required Color color,
-    String trend = '',
-  }) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.grey.shade200),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
-        children: [
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Icon(icon, color: color, size: 24),
-              if (trend.isNotEmpty)
-                Text(
-                  trend,
-                  style: GoogleFonts.poppins(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.green,
-                  ),
-                ),
-            ],
-          ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
-                style: GoogleFonts.poppins(
-                  fontSize: 12,
-                  color: Colors.grey.shade600,
-                ),
-              ),
-              Text(
-                value,
-                style: GoogleFonts.poppins(
-                  fontSize: 28,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.grey.shade900,
-                ),
-              ),
-            ],
-          ),
-        ],
-      ),
-    );
-  }
-
-  // =====================================================
-  // AMENAZA PRINCIPAL
-  // =====================================================
-  Widget _buildPrimaryThreat() {
-    String primaryDisease = 'Ninguna';
-    int primaryCount = 0;
-    int total = _totalDiagnostics > 0 ? _totalDiagnostics : 1;
-    
-    if (_diseaseStats.isNotEmpty) {
-      final sorted = _diseaseStats.entries.toList()
-        ..sort((a, b) => b.value.compareTo(a.value));
-      
-      for (var entry in sorted) {
-        if (entry.key != 'sana') {
-          primaryDisease = _classDisplayNames[entry.key] ?? entry.key;
-          primaryCount = entry.value;
-          break;
-        }
+  Widget build(BuildContext context){
+    final c = AppColors.of(context);
+    if(_loading) return Scaffold(backgroundColor: c.bg, body: Center(child: CircularProgressIndicator(color: c.primary)));
+    // Si no hay datos, usar demo del diseño
+    final totalDisplay = _total > 0 ? _total : 1028;
+    final avgInfection = _total>0 ? (_disease/_total*100) : 24.5;
+    // Mapear stats a colores diseño
+    final oidio = _stats['oidio'] ?? (_total==0? 430:0);
+    final mildiu = _stats['mildiu'] ?? (_total==0? 310:0);
+    final mosca = _stats['mosca_blanca'] ?? (_total==0? 185:0);
+    final sana = _stats['sana'] ?? (_total==0? 103:0);
+    // Dominante
+    String dom="Oidio"; Color domColor=const Color(0xFFF59E0B); int domPct=42;
+    if(_stats.isNotEmpty){
+      final sorted=_stats.entries.where((e)=>e.key!='sana').toList()..sort((a,b)=>b.value.compareTo(a.value));
+      if(sorted.isNotEmpty){
+        final e=sorted.first;
+        dom=e.key=="oidio"?"Oidio": e.key=="mildiu"?"Mildiu": e.key=="mosca_blanca"?"Mosca B.": e.key;
+        domPct= (e.value/_total*100).round();
+        domColor= e.key=="mildiu"? c.danger: e.key=="mosca_blanca"? const Color(0xFFEAB308): const Color(0xFFF59E0B);
       }
     }
-    
-    final percentage = total > 0 ? (primaryCount / total * 100).toInt() : 0;
 
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: AppColors.primaryEmerald.withValues(alpha: 0.08),
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(
-            color: AppColors.primaryEmerald.withValues(alpha: 0.2),
-            width: 1,
-          ),
-        ),
-        child: Row(
-          children: [
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppColors.primaryEmerald.withValues(alpha: 0.2),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Icon(
-                Icons.warning_rounded,
-                color: AppColors.primaryEmerald,
-                size: 28,
-              ),
+    return Scaffold(
+      backgroundColor: c.bg,
+      body: SafeArea(child: Stack(children: [
+        SingleChildScrollView(
+          padding: const EdgeInsets.only(bottom: 100),
+          child: Column(children: [
+            _header(c),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const SizedBox(height: 12),
+                _filters(c),
+                const SizedBox(height: 16),
+                _kpis(c, totalDisplay, avgInfection, dom, domColor, domPct),
+                const SizedBox(height: 16),
+                _doughnut(c, oidio: domPct, mildiu: 30, mosca: 18, sana: 10),
+                const SizedBox(height: 16),
+                _lineChart(c),
+                const SizedBox(height: 16),
+                _mapCard(c),
+                const SizedBox(height: 16),
+                SizedBox(width: double.infinity, child: ElevatedButton.icon(
+                  onPressed: () => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Exportar PDF — próximamente"), backgroundColor: c.primary)),
+                  icon: const Icon(Icons.picture_as_pdf_rounded, size: 18),
+                  label: Text("Exportar PDF", style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w700)),
+                  style: ElevatedButton.styleFrom(backgroundColor: c.primary, foregroundColor: c.onPrimary, padding: const EdgeInsets.symmetric(vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)), side: BorderSide(color: const Color(0xFF6FFBBE))),
+                )),
+              ]),
             ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    'Primary Threat',
-                    style: GoogleFonts.poppins(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500,
-                      color: AppColors.primaryEmerald,
-                      letterSpacing: 0.5,
-                    ),
-                  ),
-                  Text(
-                    primaryDisease,
-                    style: GoogleFonts.poppins(
-                      fontSize: 20,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.grey.shade900,
-                    ),
-                  ),
-                  Text(
-                    'Detected in $percentage% of scans',
-                    style: GoogleFonts.poppins(
-                      fontSize: 14,
-                      color: Colors.grey.shade600,
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ],
+          ]),
         ),
-      ),
+      ])),
     );
   }
 
-  // =====================================================
-  // GRÁFICO DE TENDENCIA
-  // =====================================================
-  Widget _buildTrendChart() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: Colors.grey.shade200),
-          boxShadow: [
-            BoxShadow(
-              color: Colors.black.withValues(alpha: 0.04),
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Text(
-                  'Crop Health Trend',
-                  style: GoogleFonts.poppins(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.grey.shade900,
-                  ),
-                ),
-                Icon(
-                  Icons.info_outline_rounded,
-                  color: Colors.grey.shade400,
-                  size: 20,
-                ),
-              ],
-            ),
-            const SizedBox(height: 16),
-            SizedBox(
-              height: 120,
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  _buildChartBar('Mon', 60),
-                  _buildChartBar('Wed', 75),
-                  _buildChartBar('Fri', 90),
-                  _buildChartBar('Sun', 85),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildChartBar(String label, double height) {
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.end,
-      children: [
-        Container(
-          width: 28,
-          height: height.clamp(10.0, 120.0),
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [
-                AppColors.primaryEmerald.withValues(alpha: 0.6),
-                AppColors.primaryEmerald,
-              ],
-              begin: Alignment.bottomCenter,
-              end: Alignment.topCenter,
-            ),
-            borderRadius: BorderRadius.circular(6),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          label,
-          style: GoogleFonts.poppins(
-            fontSize: 11,
-            color: Colors.grey.shade500,
-          ),
-        ),
-      ],
-    );
-  }
-
-  // =====================================================
-  // DISTRIBUCIÓN Y RECOMENDACIONES (MEJORADO)
-  // =====================================================
-  Widget _buildDistributionAndRecommendation() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Column(
-        children: [
-          _buildDistributionCard(),
-          const SizedBox(height: 12),
-          _buildRecommendationCard(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildDistributionCard() {
-    final total = _totalDiagnostics > 0 ? _totalDiagnostics : 1;
-    final healthyPct = (_healthyCount / total * 100).toInt();
-    final diseasePct = (_diseaseCount / total * 100).toInt();
-    final otherPct = 100 - healthyPct - diseasePct;
-
+  Widget _header(AppColors c){
     return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: Colors.grey.shade200),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            'Issue Breakdown',
-            style: GoogleFonts.poppins(
-              fontSize: 18,
-              fontWeight: FontWeight.w600,
-              color: Colors.grey.shade900,
-            ),
-          ),
-          const SizedBox(height: 12),
-          // Barra de distribución
-          ClipRRect(
-            borderRadius: BorderRadius.circular(8),
-            child: Row(
-              children: [
-                if (healthyPct > 0)
-                  Expanded(
-                    flex: healthyPct,
-                    child: Container(
-                      height: 12,
-                      color: Colors.green.shade500,
-                    ),
-                  ),
-                if (diseasePct > 0)
-                  Expanded(
-                    flex: diseasePct,
-                    child: Container(
-                      height: 12,
-                      color: Colors.red.shade500,
-                    ),
-                  ),
-                if (otherPct > 0)
-                  Expanded(
-                    flex: otherPct,
-                    child: Container(
-                      height: 12,
-                      color: Colors.grey.shade300,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 12),
-          // Leyenda
-          Wrap(
-            spacing: 16,
-            runSpacing: 8,
-            children: [
-              _buildLegendItem('Healthy ($healthyPct%)', Colors.green.shade500),
-              _buildLegendItem('Enfermedades ($diseasePct%)', Colors.red.shade500),
-              _buildLegendItem('Other ($otherPct%)', Colors.grey.shade500),
-            ],
-          ),
-        ],
-      ),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(color: c.bg, border: Border(bottom: BorderSide(color: c.border))),
+      child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        Row(children: [Icon(Icons.agriculture_rounded, color: c.primary, size: 22), const SizedBox(width: 8), Text("Analítica de Plagas", style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w700, color: c.primary))]),
+        Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6), decoration: BoxDecoration(color: c.bg, borderRadius: BorderRadius.circular(20), border: Border.all(color: c.border)), child: Row(children: [Container(width: 8,height: 8, decoration: BoxDecoration(color: c.primary, shape: BoxShape.circle)), const SizedBox(width: 6), Text("Edge AI - Offline Active", style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: c.textDim))])),
+      ]),
     );
   }
 
-  Widget _buildLegendItem(String label, Color color) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Container(
-          width: 12,
-          height: 12,
-          decoration: BoxDecoration(
-            color: color,
-            borderRadius: BorderRadius.circular(4),
-          ),
-        ),
-        const SizedBox(width: 6),
-        Text(
-          label,
-          style: GoogleFonts.poppins(
-            fontSize: 12,
-            color: Colors.grey.shade600,
-          ),
-        ),
-      ],
-    );
+  Widget _filters(AppColors c){
+    return SingleChildScrollView(scrollDirection: Axis.horizontal, child: Row(children: _periods.map((p){
+      final sel=_period==p;
+      return Padding(padding: const EdgeInsets.only(right: 8), child: ChoiceChip(
+        label: Text(p, style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: sel? c.onPrimary: c.textDim)),
+        selected: sel,
+        selectedColor: c.primary,
+        backgroundColor: c.card,
+        side: BorderSide(color: sel? c.primary: c.border),
+        onSelected: (_)=> setState(()=> _period=p),
+      ));
+    }).toList()));
   }
 
-  // =====================================================
-  // RECOMENDACIÓN MEJORADA
-  // =====================================================
-  Widget _buildRecommendationCard() {
-    String recommendation;
-    IconData icon;
-    Color color;
-
-    if (_totalDiagnostics < 3) {
-      recommendation = 'Realiza más diagnósticos para obtener recomendaciones precisas. Te sugerimos monitorear al menos 5 sectores diferentes.';
-      icon = Icons.lightbulb_outline_rounded;
-      color = Colors.amber.shade700;
-    } else if (_diseaseCount > _healthyCount) {
-      recommendation = '⚠️ Se detecta una alta incidencia de enfermedades. Se recomienda aplicar fungicidas preventivos y aumentar la frecuencia de monitoreo en las áreas más afectadas.';
-      icon = Icons.warning_rounded;
-      color = Colors.red.shade600;
-    } else if (_healthyCount > _diseaseCount * 2) {
-      recommendation = '✅ ¡Excelente! La mayoría de tus plantas están sanas. Continúa con las buenas prácticas agrícolas y mantén el monitoreo regular.';
-      icon = Icons.emoji_events_rounded;
-      color = Colors.green.shade600;
-    } else {
-      recommendation = '📊 El cultivo muestra un equilibrio entre plantas sanas y con enfermedades. Sigue monitoreando y aplica medidas preventivas según sea necesario.';
-      icon = Icons.agriculture_rounded;
-      color = AppColors.primaryEmerald;
-    }
-
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [color.withValues(alpha: 0.1), Colors.white],
-          begin: Alignment.topLeft,
-          end: Alignment.bottomRight,
-        ),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: color.withValues(alpha: 0.3),
-          width: 1.5,
-        ),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.all(10),
-                decoration: BoxDecoration(
-                  color: color.withValues(alpha: 0.2),
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Icon(icon, color: color, size: 24),
-              ),
-              const SizedBox(width: 12),
-              Text(
-                'Field Recommendations',
-                style: GoogleFonts.poppins(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.grey.shade900,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Text(
-            recommendation,
-            style: GoogleFonts.poppins(
-              fontSize: 14,
-              color: Colors.grey.shade700,
-              height: 1.5,
-            ),
-          ),
-          const SizedBox(height: 12),
-          OutlinedButton.icon(
-            onPressed: () {},
-            icon: const Icon(Icons.map_rounded, size: 18),
-            label: const Text('View Sector Map'),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: AppColors.primaryEmerald,
-              side: BorderSide(color: AppColors.primaryEmerald),
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(24),
-              ),
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // =====================================================
-  // IMAGEN DE CAMPO
-  // =====================================================
-  Widget _buildFieldImage() {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16),
-      child: Container(
-        height: 120,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(16),
-          image: const DecorationImage(
-            image: NetworkImage(
-              'https://lh3.googleusercontent.com/aida-public/AB6AXuBrUNcQ2QHpq4csqKkCmmyQ3NLBSgYnDHx9x3UBfkfe2RWc8XVOeWknMmd83PfixYxG5jJMRR-ds42bC_AOQHvLbN3xoBG1jhaYhY9hvuTknJc8IWjKNZ4C3hOfaXdRy7WFVJFrfHiNIlP7aEoYfxutawYp9N7Qs7x70AkKofNnxNIJMNuBG0Mb6dO-qGRsaocV5uRmgC8zxvuknSG9jUrz9ODwtWmW_wyYziUyyI16eWIVH9yLpFnv-x5jo3z_Aes9_H0yMOlkDHP6'
-            ),
-            fit: BoxFit.cover,
-          ),
-        ),
+  Widget _kpis(AppColors c, int total, double avg, String dom, Color domColor, int domPct){
+    return Column(children: [
+      Row(children: [
+        Expanded(child: _kpiCard(c, label: "Total Scans", value: total.toString(), icon: Icons.qr_code_scanner_rounded, iconColor: c.primary)),
+        const SizedBox(width: 12),
+        Expanded(child: _kpiCard(c, label: "Avg Infection", value: "${avg.toStringAsFixed(1)}%", valueColor: c.danger, icon: Icons.trending_up_rounded, iconColor: c.danger)),
+      ]),
+      const SizedBox(height: 12),
+      ClipRRect(
+        borderRadius: BorderRadius.circular(8),
         child: Container(
-          decoration: BoxDecoration(
-            borderRadius: BorderRadius.circular(16),
-            gradient: LinearGradient(
-              colors: [
-                Colors.black.withValues(alpha: 0.6),
-                Colors.transparent,
-              ],
-              begin: Alignment.bottomCenter,
-              end: Alignment.topCenter,
-            ),
-          ),
-          child: Align(
-            alignment: Alignment.bottomLeft,
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Text(
-                'Active Monitoring: Sector B - North Block',
-                style: GoogleFonts.poppins(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: Colors.white,
-                ),
-              ),
-            ),
-          ),
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: c.card, border: Border.all(color: c.border)),
+          child: Row(children: [
+            Container(width: 4, height: 56, decoration: BoxDecoration(color: domColor, borderRadius: BorderRadius.circular(4))),
+            const SizedBox(width: 12),
+            Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Text("Dominant Pest", style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w700, color: c.textDim, letterSpacing: 0.8)),
+              const SizedBox(height: 4),
+              Text(dom, style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w700, color: domColor)),
+              const SizedBox(height: 6),
+              Row(children: [Expanded(child: ClipRRect(borderRadius: BorderRadius.circular(4), child: LinearProgressIndicator(value: domPct/100, minHeight: 6, backgroundColor: c.bg, valueColor: AlwaysStoppedAnimation(domColor)))), const SizedBox(width: 8), Text("$domPct%", style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: domColor))]),
+            ])),
+          ]),
         ),
       ),
+    ]);
+  }
+
+  Widget _kpiCard(AppColors c, {required String label, required String value, Color? valueColor, required IconData icon, required Color iconColor}){
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(color: c.card, borderRadius: BorderRadius.circular(8), border: Border.all(color: c.border)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, mainAxisSize: MainAxisSize.min, children: [
+        Text(label.toUpperCase(), style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w700, color: c.textDim, letterSpacing: 0.8)),
+        const SizedBox(height: 16),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+          Text(value, style: GoogleFonts.inter(fontSize: 20, fontWeight: FontWeight.w700, color: valueColor?? c.text)),
+          Icon(icon, color: iconColor, size: 20),
+        ]),
+      ]),
     );
   }
+
+  Widget _doughnut(AppColors c, {required int oidio, required int mildiu, required int mosca, required int sana}){
+    return Container(
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(color: c.card, borderRadius: BorderRadius.circular(12), border: Border.all(color: c.border)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text("Prevalencia de Enfermedades", style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w600, color: c.text)),
+        const SizedBox(height: 16),
+        Center(child: SizedBox(width: 200, height: 200, child: CustomPaint(painter: _DoughnutPainter(c: c, oidio: oidio, mildiu: mildiu, mosca: mosca, sana: sana), size: const Size(200,200)))),
+        const SizedBox(height: 16),
+        GridView.count(crossAxisCount: 2, shrinkWrap: true, physics: const NeverScrollableScrollPhysics(), mainAxisSpacing: 10, crossAxisSpacing: 10, childAspectRatio: 2.9, children: [
+          _legend(c, "Oidio", oidio, const Color(0xFFF59E0B), isSmall: true),
+          _legend(c, "Mildiu", mildiu, c.danger, isSmall: true),
+          _legend(c, "Mosca B.", mosca, const Color(0xFFEAB308)),
+          _legend(c, "Sana", sana, c.primary),
+        ]),
+      ]),
+    );
+  }
+
+  Widget _legend(AppColors c, String label, int pct, Color color, {bool isSmall=false}){
+    return Container(
+      padding: EdgeInsets.symmetric(horizontal: 10, vertical: isSmall? 6: 8),
+      decoration: BoxDecoration(color: c.bg, borderRadius: BorderRadius.circular(12), border: Border.all(color: c.border)),
+      child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+        Row(children: [Container(width: isSmall? 8:10, height: isSmall? 8:10, decoration: BoxDecoration(color: color, shape: BoxShape.circle, boxShadow: [BoxShadow(color: color.withValues(alpha: 0.4), blurRadius: 6)])), const SizedBox(width: 6), Text(label, style: GoogleFonts.inter(fontSize: isSmall? 10: 11, fontWeight: FontWeight.w600, color: c.text))]),
+        Text("$pct%", style: GoogleFonts.inter(fontSize: isSmall? 11: 12, fontWeight: FontWeight.w700, color: c.text)),
+      ]),
+    );
+  }
+
+  Widget _lineChart(AppColors c){
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(color: c.card, borderRadius: BorderRadius.circular(8), border: Border.all(color: c.border)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text("Evolución Semanal de Incidencia", style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600, color: c.text)),
+        const SizedBox(height: 12),
+        SizedBox(height: 160, child: CustomPaint(painter: _LineChartPainter(c), size: const Size(double.infinity, 160))),
+        const SizedBox(height: 4),
+        Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: ["W1","W2","W3","W4","W5","W6","W7"].map((e)=> Text(e, style: GoogleFonts.inter(fontSize: 10, color: c.textDim))).toList()),
+      ]),
+    );
+  }
+
+  Widget _mapCard(AppColors c){
+    return Container(
+      decoration: BoxDecoration(color: c.card, borderRadius: BorderRadius.circular(12), border: Border.all(color: c.border)),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        ClipRRect(
+          borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
+          child: Stack(children: [
+            Image.network("https://lh3.googleusercontent.com/aida-public/AB6AXuBJuz_ahj1Ay79kblATcpfiar_TMixm5QfiG4W9a0HLdyg3Tb0x8fb0snicMgAKQDsjuYz21604U2Wt709vCtz58TacrWN55x_958i2_pNTIOJw5wDN2Kj6R6J6EvHl-bv6j4U264WKlF0jbVMTFPsFDRlA17BzyjsAws3tzmRmj5KFY2ykznFqORMTHo2tvjVFvLRD8cvv1wihNA5-G_UzzgfrfHiQjtNKi8GBgAc4fvh1quTdGb3MjA", width: double.infinity, height: 180, fit: BoxFit.cover, errorBuilder: (_,__,___)=> Container(height: 180, color: c.bg, child: Icon(Icons.map_rounded, color: c.textDim, size: 40))),
+            Positioned(top: 40, left: 60, child: _pulseDot(c.danger)),
+            const Positioned(top: 80, left: 140, child: _dot(Color(0xFFF59E0B))),
+            Positioned(bottom: 40, right: 60, child: _dot(c.primary)),
+            Positioned(top: 12, left: 12, child: Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6), decoration: BoxDecoration(color: c.bg.withValues(alpha: 0.85), borderRadius: BorderRadius.circular(20), border: Border.all(color: c.primary)), child: Row(children: [Icon(Icons.location_on_rounded, color: c.primary, size: 14), const SizedBox(width: 4), Text("Fundo El Pedregal", style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600, color: c.primary))]))),
+          ]),
+        ),
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text("Fundo El Pedregal", style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w700, color: c.text)), const SizedBox(height: 2), Text("Sector A - Lote 14 • Majes", style: GoogleFonts.inter(fontSize: 12, color: c.textDim))]),
+              Container(padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6), decoration: BoxDecoration(color: c.danger.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(8), border: Border.all(color: c.danger)), child: Text("Alta Alerta", style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w700, color: c.danger))),
+            ]),
+            const SizedBox(height: 14),
+            Text("Zona Crítica (Oidio) — Requiere intervención inmediata", style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: c.text)),
+            const SizedBox(height: 6),
+            _mapRow(c, label: "0.5 Hectáreas afectadas", value: "75%", pct: 0.75, color: c.danger),
+            const SizedBox(height: 12),
+            Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+              Row(children: [Icon(Icons.schedule_rounded, color: c.textDim, size: 16), const SizedBox(width: 6), Text("Último Escaneo", style: GoogleFonts.inter(fontSize: 12, color: c.textDim))]),
+              Text("Hace 2 horas • Hoy 10:30", style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: c.text)),
+            ]),
+            const SizedBox(height: 16),
+            SizedBox(width: double.infinity, child: ElevatedButton.icon(onPressed: (){}, icon: const Icon(Icons.map_rounded, size: 18), label: Text("Ver Mapa Completo", style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w700)), style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF1A211D), foregroundColor: c.primary, side: BorderSide(color: c.primary), padding: const EdgeInsets.symmetric(vertical: 12), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10))))),
+          ]),
+        ),
+      ]),
+    );
+  }
+
+  Widget _mapRow(AppColors c, {required String label, required String value, required double pct, required Color color}){
+    return Column(children: [
+      Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [Text(label, style: GoogleFonts.inter(fontSize: 11, color: c.textDim)), Text(value, style: GoogleFonts.inter(fontSize: 11, color: c.text))]),
+      const SizedBox(height: 4),
+      ClipRRect(borderRadius: BorderRadius.circular(4), child: LinearProgressIndicator(value: pct, minHeight: 4, backgroundColor: c.bg, valueColor: AlwaysStoppedAnimation(color))),
+    ]);
+  }
+}
+
+class _dot extends StatelessWidget {
+  final Color color;
+  const _dot(this.color);
+  @override
+  Widget build(BuildContext context){
+    final c = AppColors.of(context);
+    return Container(width: 8,height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle, border: Border.all(color: c.bg, width: 1)));
+  }
+}
+
+class _pulseDot extends StatelessWidget {
+  final Color color;
+  const _pulseDot(this.color);
+  @override
+  Widget build(BuildContext context){
+    final c = AppColors.of(context);
+    return Container(width: 12,height: 12, decoration: BoxDecoration(color: color, shape: BoxShape.circle, border: Border.all(color: c.bg, width: 2), boxShadow: [BoxShadow(color: color.withValues(alpha: 0.7), blurRadius: 8)]));
+  }
+}
+
+class _DoughnutPainter extends CustomPainter {
+  final int oidio, mildiu, mosca, sana;
+  final AppColors c;
+  _DoughnutPainter({required this.oidio, required this.mildiu, required this.mosca, required this.sana, required this.c});
+  @override
+  void paint(Canvas canvas, Size size){
+    final center=Offset(size.width/2, size.height/2);
+    final radius=size.width*0.36;
+    final stroke=18.0;
+    final total=oidio+mildiu+mosca+sana;
+    if(total==0) return;
+    final segments=[
+      [oidio, const Color(0xFFF59E0B)],
+      [mildiu, c.danger],
+      [mosca, const Color(0xFFEAB308)],
+      [sana, c.primary],
+    ];
+    double start=-90;
+    final paint=Paint()..style=PaintingStyle.stroke..strokeWidth=stroke..strokeCap=StrokeCap.round;
+    for(var s in segments){
+      final pct=(s[0] as int)/total;
+      final sweep=360*pct;
+      paint.color=s[1] as Color;
+      canvas.drawArc(Rect.fromCircle(center: center, radius: radius), start*3.14159/180, sweep*3.14159/180, false, paint);
+      start+=sweep;
+    }
+    // center text
+    final tp=TextPainter(text: TextSpan(children: [TextSpan(text: "100%\n", style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w700, color: c.text)), TextSpan(text: "Scans", style: GoogleFonts.inter(fontSize: 10, color: c.textDim))]), textAlign: TextAlign.center, textDirection: TextDirection.ltr)..layout();
+    tp.paint(canvas, Offset(center.dx - tp.width/2, center.dy - tp.height/2));
+  }
+  @override
+  bool shouldRepaint(covariant CustomPainter old)=>false;
+}
+
+class _LineChartPainter extends CustomPainter {
+  final AppColors c;
+  _LineChartPainter(this.c);
+  @override
+  void paint(Canvas canvas, Size size){
+    final grid=Paint()..color=c.border.withValues(alpha: 0.4)..strokeWidth=0.5;
+    for(int i=0;i<5;i++){ canvas.drawLine(Offset(0, size.height/4*i), Offset(size.width, size.height/4*i), grid); }
+    for(int i=0;i<6;i++){ canvas.drawLine(Offset(size.width/5*i, 0), Offset(size.width/5*i, size.height), grid); }
+    final path=Path()..moveTo(0, size.height*0.9);
+    final points=[Offset(0, size.height*0.9), Offset(size.width*0.15, size.height*0.75), Offset(size.width*0.30, size.height*0.80), Offset(size.width*0.45, size.height*0.60), Offset(size.width*0.60, size.height*0.40), Offset(size.width*0.80, size.height*0.20), Offset(size.width, size.height*0.10)];
+    for(int i=0;i<points.length-1;i++){
+      final p0=points[i], p1=points[i+1];
+      final cp=Offset((p0.dx+p1.dx)/2, p0.dy);
+      path.quadraticBezierTo(cp.dx, cp.dy, p1.dx, p1.dy);
+    }
+    final fillPath=Path.from(path)..lineTo(size.width, size.height)..lineTo(0, size.height)..close();
+    final fillPaint=Paint()..shader=LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [c.primary.withValues(alpha: 0.3), Colors.transparent]).createShader(Rect.fromLTWH(0,0,size.width,size.height));
+    canvas.drawPath(fillPath, fillPaint);
+    final linePaint=Paint()..color=c.primary..style=PaintingStyle.stroke..strokeWidth=2..strokeCap=StrokeCap.round;
+    canvas.drawPath(path, linePaint);
+    final dotPaint=Paint()..color=c.bg..style=PaintingStyle.fill;
+    final dotStroke=Paint()..color=c.primary..style=PaintingStyle.stroke..strokeWidth=1.2;
+    for(var p in points){ canvas.drawCircle(p, 4, dotPaint); canvas.drawCircle(p, 4, dotStroke); }
+  }
+  @override
+  bool shouldRepaint(covariant CustomPainter old)=>false;
 }

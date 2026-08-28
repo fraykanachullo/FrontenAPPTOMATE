@@ -1,357 +1,149 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:tomate_detection_app/core/constants/app_constants.dart';
-import 'package:tomate_detection_app/core/services/database_service.dart';
+import 'package:tomate_detection_app/features/authentication/bloc/auth_bloc.dart';
+import 'package:tomate_detection_app/features/authentication/bloc/auth_event.dart';
+import 'package:tomate_detection_app/features/authentication/bloc/auth_state.dart';
 import 'package:tomate_detection_app/features/authentication/data/models/user_model.dart';
 
+// Stitch: dark #0f150e, primary #78dc77, input #0F4C3A/20 border #2D2D2D
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
-
   @override
   State<LoginPage> createState() => _LoginPageState();
 }
 
 class _LoginPageState extends State<LoginPage> {
-  final _emailController = TextEditingController();
-  final _passwordController = TextEditingController();
-  final DatabaseService _dbService = DatabaseService();
-  bool _obscurePassword = true;
-  bool _isLoading = false;
+  final _email = TextEditingController();
+  final _pass = TextEditingController();
+  bool _obscure = true;
+
+  @override
+  void dispose() { _email.dispose(); _pass.dispose(); super.dispose(); }
+
+  void _doLogin() {
+    if (_email.text.trim().isEmpty || _pass.text.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Completa todos los campos"), backgroundColor: Color(0xFF93000A)));
+      return;
+    }
+    context.read<AuthBloc>().add(LoginRequested(_email.text.trim(), _pass.text));
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFFF5F7FA),
-      body: SafeArea(
-        child: SingleChildScrollView(  // ✅ CORREGIDO: Scroll para evitar overflow
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const SizedBox(height: 20),
-              // Logo
-              Row(
-                children: [
-                  Container(
-                    padding: const EdgeInsets.all(12),
-                    decoration: BoxDecoration(
-                      color: AppColors.primaryEmerald,
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    child: const Icon(
-                      Icons.eco_rounded,
-                      color: Colors.white,
-                      size: 28,
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Text(
-                    'AgriScan Pro',
-                    style: GoogleFonts.poppins(
-                      fontSize: 22,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.primaryEmerald,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 40),
-              // Título
-              Text(
-                'Bienvenido de Vuelta',
-                style: GoogleFonts.poppins(
-                  fontSize: 28,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.grey.shade900,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                'Inicia sesión para continuar monitoreando tus campos',
-                style: GoogleFonts.poppins(
-                  fontSize: 14,
-                  color: Colors.grey.shade600,
-                ),
-              ),
-              const SizedBox(height: 32),
-              // Formulario
-              _buildTextField(
-                controller: _emailController,
-                icon: Icons.mail_outline_rounded,
-                hint: 'Correo Electrónico',
-                keyboardType: TextInputType.emailAddress,
-              ),
-              const SizedBox(height: 16),
-              _buildTextField(
-                controller: _passwordController,
-                icon: Icons.lock_outline_rounded,
-                hint: 'Contraseña',
-                obscureText: _obscurePassword,
-                suffixIcon: IconButton(
-                  icon: Icon(
-                    _obscurePassword
-                        ? Icons.visibility_off_rounded
-                        : Icons.visibility_rounded,
-                    color: Colors.grey.shade400,
-                  ),
-                  onPressed: () {
-                    setState(() => _obscurePassword = !_obscurePassword);
-                  },
-                ),
-              ),
-              const SizedBox(height: 8),
-              // Forgot Password
-              Align(
-                alignment: Alignment.centerRight,
-                child: TextButton(
-                  onPressed: () {},
-                  child: Text(
-                    '¿Olvidaste tu contraseña?',
-                    style: GoogleFonts.poppins(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w500,
-                      color: AppColors.primaryEmerald,
-                    ),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 24),
-              // Login Button
-              SizedBox(
-                width: double.infinity,
-                height: 56,
-                child: ElevatedButton(
-                  onPressed: _isLoading ? null : _handleLogin,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.primaryEmerald,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(28),
-                    ),
-                    elevation: 2,
-                  ),
-                  child: _isLoading
-                      ? const SizedBox(
-                          height: 24,
-                          width: 24,
-                          child: CircularProgressIndicator(
-                            color: Colors.white,
-                            strokeWidth: 2,
-                          ),
-                        )
-                      : Row(
-                          mainAxisAlignment: MainAxisAlignment.center,
-                          children: [
-                            Text(
-                              'Iniciar Sesión',
-                              style: GoogleFonts.poppins(
-                                fontSize: 16,
-                                fontWeight: FontWeight.w600,
-                              ),
-                            ),
-                            const SizedBox(width: 8),
-                            const Icon(Icons.arrow_forward_rounded, size: 20),
-                          ],
-                        ),
-                ),
-              ),
-              const SizedBox(height: 16),
-              // Divider
-              Row(
-                children: [
-                  Expanded(child: Divider(color: Colors.grey.shade300)),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    child: Text(
-                      'O',
-                      style: GoogleFonts.poppins(
-                        fontSize: 12,
-                        color: Colors.grey.shade500,
+    return BlocListener<AuthBloc, AuthState>(
+      listener: (context, state) {
+        if (state is AuthAuthenticated) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Bienvenido ${state.user.name}"), backgroundColor: const Color(0xFF4CAF50)));
+          // Convertir UserEntity -> UserModel para compatibilidad con /home
+          final u = UserModel(id: state.user.id, name: state.user.name, email: state.user.email, password: "", role: state.user.role, createdAt: DateTime.tryParse(state.user.createdAt ?? "") ?? DateTime.now());
+          Navigator.pushReplacementNamed(context, '/home', arguments: u);
+        } else if (state is AuthError) {
+          ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(state.message), backgroundColor: const Color(0xFF93000A)));
+        }
+      },
+      child: Scaffold(
+        backgroundColor: const Color(0xFF0F150E),
+        body: SafeArea(
+          child: Column(children: [
+            // Header Stitch
+            Container(
+              height: 48,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              color: const Color(0xFF0F150E),
+              child: Row(children: [
+                const Icon(Icons.spa_rounded, color: Color(0xFF78DC77), size: 20),
+                Expanded(child: Center(child: Text("AgriScan Pro", style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w600, color: const Color(0xFF78DC77))))),
+                const SizedBox(width: 20),
+              ]),
+            ),
+            Expanded(
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: Column(crossAxisAlignment: CrossAxisAlignment.center, children: [
+                  const SizedBox(height: 24),
+                  Text("Bienvenido de Vuelta", style: GoogleFonts.poppins(fontSize: 28, fontWeight: FontWeight.w700, color: const Color(0xFFDEE4D9), height: 1.2), textAlign: TextAlign.center),
+                  const SizedBox(height: 8),
+                  Text("Inicia sesión para continuar", style: GoogleFonts.poppins(fontSize: 14, color: const Color(0xFFBECAB9))),
+                  const SizedBox(height: 24),
+                  // Email
+                  _inputField(controller: _email, hint: "Correo electrónico", icon: Icons.mail_outline_rounded, keyboard: TextInputType.emailAddress),
+                  const SizedBox(height: 12),
+                  // Password
+                  _inputField(controller: _pass, hint: "Contraseña", icon: Icons.lock_outline_rounded, obscure: _obscure, suffix: IconButton(icon: Icon(_obscure ? Icons.visibility_outlined : Icons.visibility_off_outlined, color: const Color(0xFF007B4F), size: 20), onPressed: () => setState(() => _obscure = !_obscure))),
+                  const SizedBox(height: 8),
+                  Align(alignment: Alignment.centerRight, child: TextButton(onPressed: (){}, child: Text("¿Olvidaste tu contraseña?", style: GoogleFonts.poppins(fontSize: 12, fontWeight: FontWeight.w500, color: const Color(0xFF78DC77))))),
+                  const SizedBox(height: 8),
+                  // Login button
+                  BlocBuilder<AuthBloc, AuthState>(builder: (context, state) {
+                    final loading = state is AuthLoading;
+                    return SizedBox(
+                      width: double.infinity, height: 48,
+                      child: ElevatedButton(
+                        onPressed: loading ? null : _doLogin,
+                        style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF78DC77), foregroundColor: const Color(0xFF00390A), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24)), elevation: 0),
+                        child: loading ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: Color(0xFF00390A))) : Text("Iniciar Sesión", style: GoogleFonts.poppins(fontSize: 16, fontWeight: FontWeight.w600, color: const Color(0xFF00390A))),
                       ),
-                    ),
-                  ),
-                  Expanded(child: Divider(color: Colors.grey.shade300)),
-                ],
+                    );
+                  }),
+                  const SizedBox(height: 20),
+                  Row(children: [
+                    const Expanded(child: Divider(color: Color(0xFF3F4A3C))),
+                    Padding(padding: const EdgeInsets.symmetric(horizontal: 12), child: Text("O", style: GoogleFonts.poppins(fontSize: 12, color: const Color(0xFFBECAB9)))),
+                    const Expanded(child: Divider(color: Color(0xFF3F4A3C))),
+                  ]),
+                  const SizedBox(height: 20),
+                  // Social
+                  _socialBtn(icon: Icons.g_mobiledata_rounded, label: "Continuar con Google"),
+                  const SizedBox(height: 12),
+                  _socialBtn(icon: Icons.account_circle_outlined, label: "Continuar con SSO"),
+                  const SizedBox(height: 24),
+                  Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                    Text("¿No tienes cuenta? ", style: GoogleFonts.poppins(fontSize: 13, color: const Color(0xFFBECAB9))),
+                    GestureDetector(onTap: () => Navigator.pushNamed(context, '/register'), child: Text("Crear una Cuenta", style: GoogleFonts.poppins(fontSize: 13, fontWeight: FontWeight.w700, color: const Color(0xFF78DC77)))),
+                  ]),
+                  const SizedBox(height: 16),
+                  Text("Backend: 192.168.1.53:8000", style: GoogleFonts.poppins(fontSize: 10, color: const Color(0xFFBECAB9).withValues(alpha: 0.5))),
+                  const SizedBox(height: 24),
+                ]),
               ),
-              const SizedBox(height: 16),
-              // Social Login
-              Row(
-                children: [
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () {},
-                      icon: const Icon(Icons.g_mobiledata_rounded, size: 24),
-                      label: Text(
-                        'Google',
-                        style: GoogleFonts.poppins(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.grey.shade700,
-                        side: BorderSide(color: Colors.grey.shade300),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(28),
-                        ),
-                      ),
-                    ),
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: OutlinedButton.icon(
-                      onPressed: () {},
-                      icon: const Icon(Icons.work_outline_rounded, size: 24),
-                      label: Text(
-                        'SSO',
-                        style: GoogleFonts.poppins(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                      style: OutlinedButton.styleFrom(
-                        foregroundColor: Colors.grey.shade700,
-                        side: BorderSide(color: Colors.grey.shade300),
-                        padding: const EdgeInsets.symmetric(vertical: 14),
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(28),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 24),
-              // Register Link
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  Text(
-                    '¿No tienes una cuenta?',
-                    style: GoogleFonts.poppins(
-                      fontSize: 14,
-                      color: Colors.grey.shade600,
-                    ),
-                  ),
-                  TextButton(
-                    onPressed: () {
-                      Navigator.pushNamed(context, '/register');
-                    },
-                    child: Text(
-                      'Crear una Cuenta',
-                      style: GoogleFonts.poppins(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.primaryEmerald,
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-            ],
-          ),
+            ),
+          ]),
         ),
       ),
     );
   }
 
-  Widget _buildTextField({
-    required TextEditingController controller,
-    required IconData icon,
-    required String hint,
-    bool obscureText = false,
-    Widget? suffixIcon,
-    TextInputType keyboardType = TextInputType.text,
-  }) {
+  Widget _inputField({required TextEditingController controller, required String hint, required IconData icon, bool obscure = false, Widget? suffix, TextInputType keyboard = TextInputType.text}) {
     return Container(
       decoration: BoxDecoration(
         color: Colors.white,
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade300),
+        border: Border.all(color: const Color(0xFF007B4F), width: 1.4),
       ),
       child: TextField(
-        controller: controller,
-        obscureText: obscureText,
-        keyboardType: keyboardType,
-        style: GoogleFonts.poppins(
-          fontSize: 14,
-          color: Colors.grey.shade800,
-        ),
+        controller: controller, obscureText: obscure, keyboardType: keyboard,
+        style: GoogleFonts.poppins(fontSize: 14, color: Colors.black, fontWeight: FontWeight.w600),
+        cursorColor: const Color(0xFF007B4F),
         decoration: InputDecoration(
-          hintText: hint,
-          hintStyle: GoogleFonts.poppins(
-            fontSize: 14,
-            color: Colors.grey.shade400,
-          ),
-          prefixIcon: Icon(icon, color: Colors.grey.shade500),
-          suffixIcon: suffixIcon,
-          border: InputBorder.none,
-          contentPadding: const EdgeInsets.symmetric(vertical: 16),
+          hintText: hint, hintStyle: GoogleFonts.poppins(fontSize: 14, color: const Color(0xFF7A7A7A)),
+          prefixIcon: Icon(icon, color: const Color(0xFF007B4F), size: 20),
+          suffixIcon: suffix == null ? null : Padding(padding: const EdgeInsets.only(right: 4), child: suffix),
+          border: InputBorder.none, contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
         ),
       ),
     );
   }
 
-  Future<void> _handleLogin() async {
-    setState(() => _isLoading = true);
-
-    try {
-      if (_emailController.text.isEmpty || _passwordController.text.isEmpty) {
-        _showError('Todos los campos son obligatorios');
-        return;
-      }
-
-      final user = await _dbService.getUserByEmail(_emailController.text.trim());
-
-      if (user == null) {
-        _showError('Usuario no encontrado');
-        return;
-      }
-
-      if (user.password != _passwordController.text) {
-        _showError('Contraseña incorrecta');
-        return;
-      }
-
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(' Bienvenido ${user.name}'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        // ✅ PASAR USUARIO A HOME
-        Navigator.pushReplacementNamed(
-          context,
-          '/home',
-          arguments: user,
-        );
-      }
-    } catch (e) {
-      _showError('Error al iniciar sesión: $e');
-    } finally {
-      if (mounted) setState(() => _isLoading = false);
-    }
-  }
-
-  void _showError(String message) {
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('❌ $message'),
-          backgroundColor: Colors.red,
-        ),
-      );
-      setState(() => _isLoading = false);
-    }
-  }
-
-  @override
-  void dispose() {
-    _emailController.dispose();
-    _passwordController.dispose();
-    super.dispose();
+  Widget _socialBtn({required IconData icon, required String label}) {
+    return SizedBox(
+      width: double.infinity, height: 48,
+      child: OutlinedButton.icon(
+        onPressed: () => ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Próximamente"))),
+        icon: Icon(icon, color: const Color(0xFFDEE4D9)),
+        label: Text(label, style: GoogleFonts.poppins(fontSize: 14, fontWeight: FontWeight.w500, color: const Color(0xFFDEE4D9))),
+        style: OutlinedButton.styleFrom(backgroundColor: const Color(0xFF1B211A), side: const BorderSide(color: Color(0xFF3F4A3C)), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(24))),
+      ),
+    );
   }
 }

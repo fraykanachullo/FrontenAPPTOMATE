@@ -1,7 +1,7 @@
 class ApiConfig {
   // ⚠️ CAMBIA ESTA IP ANTES DE CADA PRESENTACIÓN
   // Usa el comando 'ipconfig' en CMD para obtener tu IP actual
-  static const String baseUrl = 'http://10.148.127.84:8000';
+  static const String baseUrl = 'http://172.20.79.180:8000';
   
   // 🔄 Para desarrollo local (emulador Android)
   // static const String baseUrl = 'http://10.0.2.2:8000';

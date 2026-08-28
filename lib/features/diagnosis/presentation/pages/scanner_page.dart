@@ -1,482 +1,556 @@
 import 'dart:io';
 import 'dart:typed_data';
-import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
+import 'package:flutter/material.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
-import 'package:tomate_detection_app/core/services/api_service.dart';
-import 'package:tomate_detection_app/core/services/database_service.dart';
-import 'package:tomate_detection_app/models/diagnosis_model.dart';
 import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
+import 'package:permission_handler/permission_handler.dart';
 import 'package:uuid/uuid.dart';
+import 'package:tomate_detection_app/core/services/api_service.dart';
+import 'package:tomate_detection_app/core/services/database_service.dart';
+import 'package:tomate_detection_app/core/services/location_service.dart';
+import 'package:tomate_detection_app/models/diagnosis_model.dart';
+import 'diagnostic_result_page.dart';
 
+// Escaneo en Tiempo Real — Producción listo: viewfinder vivo + overlay YOLO + HUD
 class ScannerPage extends StatefulWidget {
   const ScannerPage({super.key});
-
   @override
   State<ScannerPage> createState() => _ScannerPageState();
 }
 
-class _ScannerPageState extends State<ScannerPage> {
+class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   CameraController? _controller;
-  List<Detection> _detections = [];
-  bool _isProcessing = false;
-  bool _isCameraReady = false;
-  final ApiService _apiService = ApiService();
-  final DatabaseService _dbService = DatabaseService();
-  final ImagePicker _imagePicker = ImagePicker();
-  final Uuid _uuid = const Uuid();
-  String _statusMessage = '';
-  Uint8List? _capturedImage;
-  bool _showImage = false;
+  List<CameraDescription> _cameras = [];
+  bool _ready = false;
+  bool _denied = false;
+  bool _busy = false;
+  bool _flashOn = false;
+  int _cameraIndex = 0;
 
-  // Mapeo de clases (según tu entrenamiento)
-  final Map<String, String> _classDisplayNames = {
-    'mildiu': 'Mildiu Velloso',
+  // Detecciones YOLO normalizadas [x,y,w,h] 0..1
+  List<Map<String, dynamic>> _dets = [];
+  Uint8List? _captured;
+  bool _showResult = false;
+
+  // Tiempo real
+  bool _streamActive = false;
+  DateTime? _lastFrame;
+  bool _inferBusy = false;
+  int _latencyMs = 9;
+
+  final _api = ApiService();
+  final _db = DatabaseService();
+  final _picker = ImagePicker();
+  final _uuid = const Uuid();
+
+  static const _classColors = {
+    'mildiu': Color(0xFFEF4444),
+    'oidio': Color(0xFFF59E0B),
+    'mosca_blanca': Color(0xFFEAB308),
+    'mosca blanca': Color(0xFFEAB308),
+    'sana': Color(0xFF10B981),
+    'sano': Color(0xFF10B981),
+    'healthy': Color(0xFF10B981),
+  };
+  static const _labels = {
+    'mildiu': 'Mildiu',
+    'oidio': 'Oidio',
     'mosca_blanca': 'Mosca Blanca',
-    'oidio': 'Cenicilla/Oidio',
-    'polilla': 'Polilla del Tomate',
-    'sana': 'Hoja Sana',
+    'mosca blanca': 'Mosca Blanca',
+    'sana': 'Sano',
+    'sano': 'Sano',
   };
 
-  final Map<String, Color> _classColors = {
-    'mildiu': Colors.orange,
-    'mosca_blanca': Colors.pink,
-    'oidio': Colors.yellow,
-    'polilla': Colors.red,
-    'sana': Colors.green,
-  };
+  String _luxText = "Luz Adecuada";
+  Color _luxColor = const Color(0xFF4EDEA3);
+  IconData _luxIcon = Icons.wb_sunny_rounded;
 
   @override
   void initState() {
     super.initState();
-    _initCamera();
+    WidgetsBinding.instance.addObserver(this);
+    _init();
   }
 
-  Future<void> _initCamera() async {
-    try {
-      final cameras = await availableCameras();
-      if (cameras.isEmpty) return;
-      _controller = CameraController(cameras[0], ResolutionPreset.medium);
-      await _controller!.initialize();
-      setState(() => _isCameraReady = true);
-    } catch (e) {
-      debugPrint('❌ Error cámara: $e');
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState s) {
+    if (_controller == null || !_controller!.value.isInitialized) return;
+    if (s == AppLifecycleState.inactive) {
+      _stopStream();
+      _controller?.dispose();
+    } else if (s == AppLifecycleState.resumed) {
+      _init();
     }
   }
 
-  Future<String?> _saveImageLocally(List<int> imageBytes) async {
+  Future<void> _init() async {
     try {
-      final directory = await getApplicationDocumentsDirectory();
-      final path = '${directory.path}/diagnostic_images/';
-      await Directory(path).create(recursive: true);
-      
-      final fileName = '${_uuid.v4()}.jpg';
-      final filePath = '$path$fileName';
-      final file = File(filePath);
-      await file.writeAsBytes(imageBytes);
-      
-      return filePath;
+      final perm = await Permission.camera.request();
+      if (!perm.isGranted) {
+        if (mounted) setState(() => _denied = true);
+        return;
+      }
+      _cameras = await availableCameras();
+      if (_cameras.isEmpty) {
+        if (mounted) setState(() => _denied = true);
+        return;
+      }
+      _controller?.dispose();
+      _controller = CameraController(
+        _cameras[_cameraIndex],
+        ResolutionPreset.high,
+        enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.bgra8888,
+      );
+      await _controller!.initialize();
+      if (!mounted) return;
+      setState(() => _ready = true);
+      _startStream();
+    } on CameraException catch (e) {
+      debugPrint("Cam init: $e");
+      if (e.code == 'CameraAccessDenied' || e.code == 'cameraPermission') {
+        if (mounted) setState(() => _denied = true);
+      }
     } catch (e) {
-      debugPrint('❌ Error guardando imagen: $e');
+      debugPrint("Cam err: $e");
+      if (mounted) setState(() => _denied = true);
+    }
+  }
+
+  // Inferencia continua (throttle cada 1.2s) -> overlay en vivo sobre el preview
+  void _startStream() {
+    final c = _controller;
+    if (c == null || !c.value.isInitialized || !c.value.isStreamingImages) return;
+    _streamActive = true;
+    _lastFrame = DateTime.now();
+    c.startImageStream((frame) async {
+      if (!_streamActive || _inferBusy) return;
+      final now = DateTime.now();
+      if (_lastFrame != null && now.difference(_lastFrame!) < const Duration(milliseconds: 1200)) return;
+      _lastFrame = now;
+      _inferBusy = true;
+      try {
+        final jpg = await _toJpeg(frame);
+        if (jpg == null) return;
+        final tmp = await getTemporaryDirectory();
+        final f = File('${tmp.path}/rt.jpg');
+        await f.writeAsBytes(jpg);
+        final sw = Stopwatch()..start();
+        final res = await _api.detectDisease(XFile(f.path));
+        final ms = sw.elapsedMilliseconds;
+        await f.delete();
+        if (!mounted || !_streamActive) return;
+        if (res['status'] == 'success') {
+          final items = (res['data']['detections'] as List? ?? []);
+          final dets = items.map((d) {
+            final b = d['bbox'] as List;
+            final x = (b[0] as num).toDouble();
+            final y = (b[1] as num).toDouble();
+            return {
+              'rect': [x, y, (b[2] as num).toDouble() - x, (b[3] as num).toDouble() - y],
+              'label': d['disease'] as String,
+              'confidence': (d['confidence'] as num) / 100.0,
+            };
+          }).toList().cast<Map<String, dynamic>>();
+          setState(() { _dets = dets; _latencyMs = ms; });
+        }
+      } catch (e) {
+        debugPrint("RT: $e");
+      } finally {
+        _inferBusy = false;
+      }
+    });
+  }
+
+  void _stopStream() {
+    _streamActive = false;
+    try { _controller?.stopImageStream(); } catch (_) {}
+  }
+
+  Future<Uint8List?> _toJpeg(CameraImage im) async {
+    try {
+      final p = im.planes[0];
+      final w = im.width, h = im.height;
+      final bpp = p.bytesPerPixel ?? 4;
+      ByteBuffer buf = p.bytes.buffer;
+      if (p.bytesPerRow != w * bpp) {
+        final packed = Uint8List(w * h * bpp);
+        for (int y = 0; y < h; y++) {
+          final src = p.bytes.buffer.asUint8List(p.bytesPerRow * y, w * bpp);
+          packed.setRange(y * w * bpp, (y + 1) * w * bpp, src);
+        }
+        buf = packed.buffer;
+      }
+      final src = img.Image.fromBytes(width: w, height: h, bytes: buf, order: img.ChannelOrder.bgra);
+      return Uint8List.fromList(img.encodeJpg(img.copyResize(src, width: 480), quality: 60));
+    } catch (e) {
       return null;
     }
   }
 
-  Future<void> _saveDiagnostic(List<Detection> detections, List<int> imageBytes) async {
+  Future<void> _capture() async {
+    if (_controller == null || !_ready || _busy) return;
+    _stopStream();
+    setState(() => _busy = true);
+    final t0 = DateTime.now();
     try {
-      final imagePath = await _saveImageLocally(imageBytes);
-      
-      for (var detection in detections) {
-        final diagnosis = DiagnosisModel(
-          diagnosticId: _uuid.v4(),
-          imagePath: imagePath,
-          disease: detection.diseaseName,
-          confidence: detection.confidence,
-          createdAt: DateTime.now(),
-          isSynced: false,
-        );
-        
-        await _dbService.saveDiagnostic(diagnosis.toMap());
-        debugPrint('✅ Diagnóstico guardado: ${diagnosis.disease}');
-      }
+      final x = await _controller!.takePicture();
+      final bytes = await x.readAsBytes();
+      await _checkLux(bytes);
+      await _analyze(bytes, t0);
     } catch (e) {
-      debugPrint('❌ Error guardando diagnóstico: $e');
+      if (mounted) {
+        setState(() => _busy = false);
+        ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e")));
+      }
+      _startStream();
     }
   }
 
-  Future<void> _captureAndDetect() async {
-    if (_controller == null || !_isCameraReady) return;
-    if (_isProcessing) return;
-
-    setState(() {
-      _isProcessing = true;
-      _statusMessage = 'Capturando imagen...';
-    });
-
+  Future<void> _fromGallery() async {
+    if (_busy) return;
+    setState(() => _busy = true);
     try {
-      final image = await _controller!.takePicture();
-      final imageBytes = await image.readAsBytes();
-      await _processImageBytes(imageBytes);
+      final f = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
+      if (f == null) { setState(() => _busy = false); return; }
+      final bytes = await f.readAsBytes();
+      await _checkLux(bytes);
+      await _analyze(bytes, DateTime.now());
     } catch (e) {
-      debugPrint('❌ Error en captura/detección: $e');
-      setState(() {
-        _isProcessing = false;
-        _statusMessage = 'Error al capturar';
-      });
+      setState(() => _busy = false);
     }
   }
 
-  Future<void> _pickImageFromGallery() async {
-    if (_isProcessing) return;
-    
-    setState(() {
-      _isProcessing = true;
-      _statusMessage = 'Seleccionando imagen...';
-    });
-
+  Future<void> _analyze(List<int> bytes, DateTime t0) async {
     try {
-      final XFile? pickedFile = await _imagePicker.pickImage(
-        source: ImageSource.gallery,
-        imageQuality: 80,
-      );
-      
-      if (pickedFile == null) {
-        setState(() {
-          _isProcessing = false;
-          _statusMessage = '';
-        });
-        return;
-      }
-      
-      setState(() {
-        _statusMessage = 'Procesando imagen...';
-      });
-      
-      final imageBytes = await pickedFile.readAsBytes();
-      final img.Image? imgImage = img.decodeImage(imageBytes);
-      
-      if (imgImage == null) {
-        throw Exception('No se pudo decodificar la imagen');
-      }
-      
-      final jpegBytes = img.encodeJpg(imgImage, quality: 90);
-      await _processImageBytes(jpegBytes);
-      
-    } catch (e) {
-      debugPrint('❌ Error galería: $e');
-      setState(() {
-        _isProcessing = false;
-        _statusMessage = 'Error al seleccionar imagen';
-      });
-    }
-  }
+      setState(() { _captured = Uint8List.fromList(bytes); _showResult = true; });
+      final tmp = await getTemporaryDirectory();
+      final f = File('${tmp.path}/diag.jpg');
+      await f.writeAsBytes(bytes);
+      LocationService.getCurrentPosition();
+      final res = await _api.detectDisease(XFile(f.path));
+      final ms = DateTime.now().difference(t0).inMilliseconds;
+      setState(() => _latencyMs = ms > 0 ? ms : 9);
+      if (res['status'] == 'success') {
+        final items = (res['data']['detections'] as List? ?? []);
+        final dets = items.map((d) {
+          final b = d['bbox'] as List;
+          final x = (b[0] as num).toDouble();
+          final y = (b[1] as num).toDouble();
+          return {
+            'rect': [x, y, (b[2] as num).toDouble() - x, (b[3] as num).toDouble() - y],
+            'label': d['disease'] as String,
+            'confidence': (d['confidence'] as num) / 100.0,
+          };
+        }).toList().cast<Map<String, dynamic>>();
+        setState(() => _dets = dets);
 
-  Future<void> _processImageBytes(List<int> imageBytes) async {
-    try {
-      setState(() {
-        _capturedImage = Uint8List.fromList(imageBytes);
-        _showImage = true;
-        _statusMessage = 'Enviando al servidor...';
-      });
-      
-      final tempDir = await getTemporaryDirectory();
-      final tempFile = File('${tempDir.path}/temp_image.jpg');
-      await tempFile.writeAsBytes(imageBytes);
-      
-      final XFile imageFile = XFile(tempFile.path);
-      
-      final result = await _apiService.detectDisease(imageFile);
-      
-      debugPrint('📦 Respuesta del backend: $result');
-      
-      if (result['status'] == 'success') {
-        final detectionsData = result['data']['detections'] as List;
-        
-        debugPrint('📊 Número de detecciones: ${detectionsData.length}');
-        
-        // ✅ GUARDAR TODOS LOS DIAGNÓSTICOS (ENFERMEDADES + SANAS)
-        if (detectionsData.isNotEmpty) {
-          final detections = detectionsData.map((d) {
-            final bbox = d['bbox'];
-            return Detection(
-              diseaseName: d['disease'],
-              confidence: (d['confidence'] as num) / 100,
-              bbox: BBox(
-                xMin: bbox[0].toDouble(),
-                yMin: bbox[1].toDouble(),
-                xMax: bbox[2].toDouble(),
-                yMax: bbox[3].toDouble(),
-              ),
-              classIndex: 0,
-            );
-          }).toList();
-          
-          // ✅ Guardar TODAS las detecciones (incluyendo sanas)
-          await _saveDiagnostic(detections, imageBytes);
-          debugPrint('✅ Diagnóstico guardado: ${detections.length} detecciones');
-        } else {
-          // ✅ Si no hay detecciones, guardar como "sana"
-          final sanaDetection = Detection(
-            diseaseName: 'sana',
-            confidence: 1.0,
-            bbox: BBox(xMin: 0, yMin: 0, xMax: 1, yMax: 1),
-            classIndex: 4,
-          );
-          await _saveDiagnostic([sanaDetection], imageBytes);
-          debugPrint('✅ Diagnóstico guardado: sana');
-        }
-        
-        // ✅ SEPARAR ENFERMEDADES Y SANAS PARA EL MENSAJE
-        final diseases = detectionsData.where((d) => d['disease'] != 'sana').toList();
-        final healthy = detectionsData.where((d) => d['disease'] == 'sana').toList();
-        
-        debugPrint('🦠 Enfermedades: ${diseases.length}');
-        debugPrint('🌿 Sanas: ${healthy.length}');
-        
-        // ✅ CREAR LISTA DE DETECCIONES (TODAS PARA MOSTRAR BBOX)
-        final detections = detectionsData.map((d) {
-          final bbox = d['bbox'];
+        final dbDets = dets.map((m) {
+          final r = m['rect'] as List;
           return Detection(
-            diseaseName: d['disease'],
-            confidence: (d['confidence'] as num) / 100,
-            bbox: BBox(
-              xMin: bbox[0].toDouble(),
-              yMin: bbox[1].toDouble(),
-              xMax: bbox[2].toDouble(),
-              yMax: bbox[3].toDouble(),
-            ),
+            diseaseName: m['label'] as String,
+            confidence: m['confidence'] as double,
+            bbox: BBox(xMin: (r[0] as double), yMin: (r[1] as double), xMax: (r[0] as double) + (r[2] as double), yMax: (r[1] as double) + (r[3] as double)),
             classIndex: 0,
           );
         }).toList();
-        
-        // ✅ CONSTRUIR MENSAJE PARA EL USUARIO
-        String message;
-        Color snackBarColor;
-        String statusMsg;
-        
-        if (diseases.isEmpty) {
-          message = '✅ ¡Excelente! No se detectaron enfermedades. La planta está sana.';
-          snackBarColor = Colors.green;
-          statusMsg = '✅ Planta sana';
-        } else if (healthy.isNotEmpty) {
-          final diseaseNames = diseases.map((d) => _classDisplayNames[d['disease']] ?? d['disease']).toList();
-          final diseaseCount = diseases.length;
-          final diseaseList = diseaseNames.join(', ');
-          message = '⚠️ Se detectaron $diseaseCount enfermedad(es): $diseaseList.';
-          snackBarColor = Colors.orange;
-          statusMsg = '⚠️ $diseaseCount enfermedad(es) detectada(s)';
-        } else {
-          final diseaseNames = diseases.map((d) => _classDisplayNames[d['disease']] ?? d['disease']).toList();
-          final diseaseCount = diseases.length;
-          final diseaseList = diseaseNames.join(', ');
-          message = '⚠️ Se detectaron $diseaseCount enfermedad(es): $diseaseList.';
-          snackBarColor = Colors.red;
-          statusMsg = '⚠️ $diseaseCount enfermedad(es) detectada(s)';
+        final list = dbDets.isEmpty
+            ? [Detection(diseaseName: 'sana', confidence: 1.0, bbox: BBox(xMin: 0, yMin: 0, xMax: 1, yMax: 1), classIndex: 4)]
+            : dbDets;
+        final p = await _saveLocal(bytes);
+        for (final d in list) {
+          await _db.saveDiagnostic(DiagnosisModel(diagnosticId: _uuid.v4(), imagePath: p, disease: d.diseaseName, confidence: d.confidence, createdAt: DateTime.now()).toMap());
         }
-        
-        setState(() {
-          _detections = detections;
-          _isProcessing = false;
-          _statusMessage = statusMsg;
-        });
-        
-        // ✅ SNACKBAR CON BOTÓN "VER HISTORIAL"
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            SnackBar(
-              content: Text(message),
-              backgroundColor: snackBarColor,
-              duration: const Duration(seconds: 4),
-              action: SnackBarAction(
-                label: 'Ver Historial',
-                textColor: Colors.white,
-                onPressed: () {
-                  // ✅ Navegar a la pestaña de historial
-                  // Usamos un IndexedStack o BottomNavigationBar
-                  // En este caso, asumimos que el índice 1 es History
-                  final navigatorContext = context;
-                  // Buscar el widget que contiene el BottomNavigationBar
-                  // y cambiar el índice a 1
-                },
-              ),
-            ),
-          );
+          await Future.delayed(const Duration(milliseconds: 500));
+          if (!mounted) return;
+          await Navigator.push(context, MaterialPageRoute(builder: (_) => DiagnosticResultPage(
+            imageBytes: Uint8List.fromList(bytes),
+            detections: list,
+            displayNames: _labels,
+            colors: _classColors,
+          )));
+          _reset();
+          return;
         }
-        
-      } else {
-        throw Exception(result['message'] ?? 'Error desconocido');
       }
-      
-      await tempFile.delete();
-      
+      setState(() => _busy = false);
     } catch (e) {
-      debugPrint('❌ Error procesando imagen: $e');
-      setState(() {
-        _isProcessing = false;
-        _statusMessage = 'Error al procesar';
-      });
-      
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('❌ Error: ${e.toString()}'),
-            backgroundColor: Colors.red,
-          ),
-        );
+      setState(() => _busy = false);
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e"), backgroundColor: Colors.red));
+    }
+  }
+
+  Future<String> _saveLocal(List<int> bytes) async {
+    final dir = await getApplicationDocumentsDirectory();
+    final p = '${dir.path}/diagnostic_images';
+    await Directory(p).create(recursive: true);
+    final f = File('$p/${_uuid.v4()}.jpg');
+    await f.writeAsBytes(bytes);
+    return f.path;
+  }
+
+  Future<void> _checkLux(Uint8List bytes) async {
+    try {
+      final d = img.decodeImage(bytes);
+      if (d == null) return;
+      double sum = 0; int over = 0;
+      final total = d.width ~/ 6 * (d.height ~/ 6);
+      for (int y = 0; y < d.height; y += 6) {
+        for (int x = 0; x < d.width; x += 6) {
+          final px = d.getPixel(x, y);
+          final lum = 0.299 * px.r + 0.587 * px.g + 0.114 * px.b;
+          sum += lum;
+          if (lum > 240) over++;
+        }
       }
-    }
+      final mean = sum / total;
+      final overPct = over / total * 100;
+      if (mean > 200 || overPct > 15) {
+        setState(() { _luxText = "Mucha luz"; _luxColor = const Color(0xFFFDD400); _luxIcon = Icons.wb_sunny_rounded; });
+      } else if (mean < 55) {
+        setState(() { _luxText = "Poca Luz"; _luxColor = const Color(0xFFFFB95F); _luxIcon = Icons.nightlight_rounded; });
+      } else {
+        setState(() { _luxText = "Luz Adecuada"; _luxColor = const Color(0xFF4EDEA3); _luxIcon = Icons.wb_sunny_rounded; });
+      }
+    } catch (_) {}
   }
 
-  void _resetCamera() {
-    setState(() {
-      _showImage = false;
-      _detections = [];
-      _capturedImage = null;
-      _statusMessage = '';
-    });
+  void _reset() {
+    setState(() { _showResult = false; _dets = []; _captured = null; _busy = false; });
+    _startStream();
   }
 
-  @override
-  Widget build(BuildContext context) {
-    if (!_isCameraReady) {
-      return Scaffold(
-        appBar: AppBar(title: const Text('Diagnóstico')),
-        body: const Center(child: CircularProgressIndicator()),
-      );
-    }
+  Future<void> _toggleFlash() async {
+    if (_controller == null || !_ready) return;
+    _flashOn = !_flashOn;
+    try { await _controller!.setFlashMode(_flashOn ? FlashMode.torch : FlashMode.off); }
+    catch (_) { _flashOn = !_flashOn; }
+    setState(() {});
+  }
 
-    return Scaffold(
-      appBar: AppBar(
-        title: const Text('Diagnóstico en Campo'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.history),
-            onPressed: () {
-              // Navegar a historial (índice 1)
-            },
-          ),
-          if (_showImage)
-            IconButton(
-              icon: const Icon(Icons.camera_alt),
-              onPressed: _resetCamera,
-              tooltip: 'Volver a cámara',
-            ),
-        ],
-      ),
-      body: Column(
-        children: [
-          Expanded(
-            child: Stack(
-              children: [
-                if (_showImage && _capturedImage != null)
-                  Image.memory(
-                    _capturedImage!,
-                    fit: BoxFit.contain,
-                    width: double.infinity,
-                  )
-                else
-                  CameraPreview(_controller!),
-                
-                if (_detections.isNotEmpty && _showImage)
-                  CustomPaint(
-                    painter: DetectionPainter(
-                      detections: _detections,
-                      imageSize: MediaQuery.of(context).size,
-                      classColors: _classColors,
-                      classNames: _classDisplayNames,
-                    ),
-                    size: MediaQuery.of(context).size,
-                  ),
-                
-                if (_isProcessing)
-                  Container(
-                    color: Colors.black.withValues(alpha: 0.5),
-                    child: Center(
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          const CircularProgressIndicator(color: Colors.white),
-                          const SizedBox(height: 16),
-                          Text(
-                            _statusMessage,
-                            style: const TextStyle(color: Colors.white, fontSize: 16),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          if (_detections.isNotEmpty)
-            Container(
-              height: 120,
-              padding: const EdgeInsets.all(8),
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                itemCount: _detections.length,
-                itemBuilder: (context, index) {
-                  final detection = _detections[index];
-                  final displayName = _classDisplayNames[detection.diseaseName] ?? detection.diseaseName;
-                  final color = _classColors[detection.diseaseName] ?? Colors.grey;
-                  return Card(
-                    color: color.withValues(alpha: 0.1),
-                    child: Padding(
-                      padding: const EdgeInsets.all(8),
-                      child: Column(
-                        mainAxisAlignment: MainAxisAlignment.center,
-                        children: [
-                          Text(
-                            displayName,
-                            style: const TextStyle(fontWeight: FontWeight.bold),
-                          ),
-                          Text(
-                            '${(detection.confidence * 100).toStringAsFixed(1)}%',
-                            style: TextStyle(
-                              color: detection.confidence > 0.5 ? color : Colors.orange,
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-          Padding(
-            padding: const EdgeInsets.all(16.0),
-            child: Row(
-              children: [
-                Expanded(
-                  child: ElevatedButton.icon(
-                    onPressed: _isProcessing ? null : _captureAndDetect,
-                    icon: const Icon(Icons.camera_alt),
-                    label: const Text('Capturar'),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: OutlinedButton.icon(
-                    onPressed: _isProcessing ? null : _pickImageFromGallery,
-                    icon: const Icon(Icons.photo_library),
-                    label: const Text('Galería'),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
+  Future<void> _flip() async {
+    if (_cameras.length < 2) return;
+    _stopStream();
+    _cameraIndex = (_cameraIndex + 1) % _cameras.length;
+    await _controller?.dispose();
+    setState(() => _ready = false);
+    await _init();
   }
 
   @override
   void dispose() {
+    _stopStream();
+    WidgetsBinding.instance.removeObserver(this);
     _controller?.dispose();
     super.dispose();
   }
+
+  @override
+  Widget build(BuildContext context) {
+    if (_denied) {
+      return Scaffold(
+        backgroundColor: const Color(0xFF131313),
+        body: Center(child: Padding(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, children: [
+          const Icon(Icons.no_photography_rounded, color: Color(0xFF4EDEA3), size: 56),
+          const SizedBox(height: 16),
+          Text("Permiso de cámara requerido", style: GoogleFonts.inter(color: Colors.white, fontSize: 16, fontWeight: FontWeight.w600)),
+          const SizedBox(height: 8),
+          Text("Activa la cámara en Ajustes para escanear hojas en campo", style: GoogleFonts.inter(color: const Color(0xFFBBCABF), fontSize: 13), textAlign: TextAlign.center),
+          const SizedBox(height: 20),
+          ElevatedButton(onPressed: _init, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF4EDEA3), foregroundColor: const Color(0xFF002113)), child: const Text("Reintentar")),
+        ]))),
+      );
+    }
+    if (!_ready || _controller == null) {
+      return const Scaffold(backgroundColor: Color(0xFF131313), body: Center(child: CircularProgressIndicator(color: Color(0xFF4EDEA3))));
+    }
+
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: Stack(children: [
+        // Capa 1 — Video en vivo (sin letterboxing)
+        Positioned.fill(child: ClipRect(child: FittedBox(fit: BoxFit.cover, child: SizedBox(
+          width: _controller!.value.previewSize!.height,
+          height: _controller!.value.previewSize!.width,
+          child: CameraPreview(_controller!),
+        )))),
+
+        // Imagen capturada + overlay
+        if (_showResult && _captured != null)
+          Positioned.fill(child: Image.memory(_captured!, fit: BoxFit.contain)),
+
+        // Capa 2 — Overlay YOLO (sobre preview o captura)
+        if (_dets.isNotEmpty)
+          Positioned.fill(child: IgnorePointer(child: CustomPaint(painter: YoloOverlayPainter(_dets)))),
+
+        // Guía foliar punteada
+        if (!_showResult)
+          Positioned.fill(child: IgnorePointer(child: CustomPaint(painter: _LeafGuide()))),
+
+        // Capa 3 — Barra superior (SafeArea)
+        SafeArea(child: Column(children: [
+          Padding(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), child: Row(children: [
+            _round(Icons.close_rounded, () => Navigator.pop(context)),
+            const Spacer(),
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+              decoration: BoxDecoration(color: _luxColor.withValues(alpha: 0.95), borderRadius: BorderRadius.circular(20)),
+              child: Row(mainAxisSize: MainAxisSize.min, children: [
+                Icon(_luxIcon, size: 15, color: Colors.black87),
+                const SizedBox(width: 6),
+                Text(_luxText, style: GoogleFonts.roboto(fontSize: 12, fontWeight: FontWeight.w700, color: Colors.black87)),
+              ]),
+            ),
+            const Spacer(),
+            _round(_flashOn ? Icons.flash_on_rounded : Icons.flash_off_rounded, _toggleFlash, active: _flashOn),
+            const SizedBox(width: 8),
+            _round(Icons.settings_rounded, () {}),
+          ])),
+          // HUD métricas flotante abajo del header
+          Align(alignment: Alignment.centerLeft, child: Container(
+            margin: const EdgeInsets.only(left: 16, top: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            decoration: BoxDecoration(color: const Color(0xFF131313).withValues(alpha: 0.8), borderRadius: BorderRadius.circular(10), border: Border.all(color: const Color(0xFF2E2E2E))),
+            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+              Row(children: [
+                Container(width: 8, height: 8, decoration: const BoxDecoration(color: Color(0xFF4EDEA3), shape: BoxShape.circle)),
+                const SizedBox(width: 6),
+                Text("$_latencyMs ms (Edge AI)", style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF4EDEA3))),
+              ]),
+              const SizedBox(height: 4),
+              Text("Clases: Oidio • Mildiu • Mosca Blanca", style: GoogleFonts.inter(fontSize: 9, color: Color(0xFFBBCABF))),
+            ]),
+          )),
+          const Spacer(),
+        ])),
+
+        // Overlay de procesando
+        if (_busy)
+          Positioned.fill(child: Container(color: Colors.black.withValues(alpha: 0.45), child: Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
+            const CircularProgressIndicator(color: Color(0xFF4EDEA3)),
+            const SizedBox(height: 12),
+            Text("Analizando...", style: GoogleFonts.inter(color: Colors.white, fontSize: 13)),
+          ])))),
+
+        // Capa 4 — Barra inferior
+        Positioned(left: 0, right: 0, bottom: 0, child: Container(
+          padding: const EdgeInsets.fromLTRB(24, 20, 24, 28),
+          decoration: BoxDecoration(gradient: LinearGradient(begin: Alignment.topCenter, end: Alignment.bottomCenter, colors: [Colors.transparent, Colors.black.withValues(alpha: 0.6), Colors.black])),
+          child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, crossAxisAlignment: CrossAxisAlignment.center, children: [
+            _roundLarge(Icons.photo_library_rounded, _fromGallery),
+            GestureDetector(
+              onTap: _busy ? null : (_showResult ? _reset : _capture),
+              child: Container(
+                width: 74, height: 74,
+                decoration: BoxDecoration(color: const Color(0xFF4EDEA3), shape: BoxShape.circle, border: Border.all(color: Colors.black, width: 4), boxShadow: [BoxShadow(color: const Color(0xFF4EDEA3).withValues(alpha: 0.45), blurRadius: 16)]),
+                child: Container(margin: const EdgeInsets.all(5), decoration: BoxDecoration(color: const Color(0xFF4EDEA3), shape: BoxShape.circle, border: Border.all(color: Color(0xFF002113), width: 2)), child: Icon(_showResult ? Icons.refresh_rounded : Icons.camera_alt_rounded, color: const Color(0xFF002113), size: 28)),
+              ),
+            ),
+            _roundLarge(Icons.cameraswitch_rounded, _flip),
+          ]),
+        )),
+      ]),
+    );
+  }
+
+  Widget _round(IconData icon, VoidCallback onTap, {bool active = false}) {
+    return GestureDetector(onTap: onTap, child: Container(width: 44, height: 44, decoration: BoxDecoration(color: const Color(0xFF1F1F1F).withValues(alpha: 0.85), shape: BoxShape.circle, border: Border.all(color: Colors.white.withValues(alpha: 0.15))), child: Icon(icon, color: active ? const Color(0xFFFFD600) : Colors.white, size: 20)));
+  }
+
+  Widget _roundLarge(IconData icon, VoidCallback onTap) {
+    return GestureDetector(onTap: onTap, child: Container(width: 50, height: 50, decoration: BoxDecoration(color: const Color(0xFF1F1F1F).withValues(alpha: 0.85), shape: BoxShape.circle, border: Border.all(color: Colors.white.withValues(alpha: 0.15))), child: Icon(icon, color: Colors.white, size: 22)));
+  }
+}
+
+// Capa 2 — CustomPainter de cajas YOLO
+class YoloOverlayPainter extends CustomPainter {
+  final List<Map<String, dynamic>> detections;
+  YoloOverlayPainter(this.detections);
+
+  static const _colors = {
+    'mildiu': Color(0xFFEF4444),
+    'oidio': Color(0xFFF59E0B),
+    'mosca_blanca': Color(0xFFEAB308),
+    'mosca blanca': Color(0xFFEAB308),
+    'sana': Color(0xFF10B981),
+    'sano': Color(0xFF10B981),
+    'healthy': Color(0xFF10B981),
+  };
+  static const _names = {
+    'mildiu': 'Mildiu',
+    'oidio': 'Oidio',
+    'mosca_blanca': 'Mosca Blanca',
+    'mosca blanca': 'Mosca Blanca',
+    'sana': 'Sano',
+    'sano': 'Sano',
+  };
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    for (final det in detections) {
+      final r = det['rect'] as List;
+      final lk = (det['label'] as String).toLowerCase();
+      final conf = (det['confidence'] as double?) ?? 0;
+      final color = _colors[lk] ?? const Color(0xFF4EDEA3);
+      final x = (r[0] as num).toDouble() * size.width;
+      final y = (r[1] as num).toDouble() * size.height;
+      final w = (r[2] as num).toDouble() * size.width;
+      final h = (r[3] as num).toDouble() * size.height;
+      final rect = Rect.fromLTWH(x, y, w, h);
+
+      canvas.drawRect(rect, Paint()..color = Colors.black..style = PaintingStyle.stroke..strokeWidth = 4.5);
+      canvas.drawRect(rect, Paint()..color = color..style = PaintingStyle.stroke..strokeWidth = 2.5);
+
+      final text = "${_names[lk] ?? lk} ${(conf * 100).toStringAsFixed(0)}%";
+      final tp = TextPainter(
+        text: TextSpan(text: text, style: GoogleFonts.roboto(fontSize: 11, fontWeight: FontWeight.w700, color: Colors.black)),
+        textDirection: TextDirection.ltr,
+      )..layout();
+      final br = RRect.fromRectAndRadius(Rect.fromLTWH(rect.left, rect.top - 18, tp.width + 10, 16), const Radius.circular(4));
+      canvas.drawRRect(br, Paint()..color = color);
+      tp.paint(canvas, Offset(rect.left + 5, rect.top - 15));
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant YoloOverlayPainter old) => old.detections != detections;
+}
+
+// Guía foliar punteada + esquinas
+class _LeafGuide extends CustomPainter {
+  @override
+  void paint(Canvas canvas, Size size) {
+    final rect = Rect.fromCenter(center: Offset(size.width / 2, size.height / 2 - 30), width: size.width * 0.72, height: size.width * 0.72);
+    final rrect = RRect.fromRectAndRadius(rect, const Radius.circular(20));
+    final path = Path()..addRect(Rect.fromLTWH(0, 0, size.width, size.height))..addRRect(rrect)..fillType = PathFillType.evenOdd;
+    canvas.drawPath(path, Paint()..color = Colors.black.withValues(alpha: 0.35));
+    final dashed = _dash(rrect);
+    canvas.drawPath(dashed, Paint()..color = Colors.white.withValues(alpha: 0.85)..style = PaintingStyle.stroke..strokeWidth = 1.5..strokeCap = StrokeCap.round);
+    final corner = Paint()..color = const Color(0xFF4EDEA3)..style = PaintingStyle.stroke..strokeWidth = 3;
+    const len = 26.0;
+    for (final c in [Offset(rect.left, rect.top), Offset(rect.right, rect.top), Offset(rect.right, rect.bottom), Offset(rect.left, rect.bottom)]) {
+      final hDir = c.dx == rect.left ? 1 : -1;
+      final vDir = c.dy == rect.top ? 1 : -1;
+      final p = Path()..moveTo(c.dx + hDir * len, c.dy)..lineTo(c.dx, c.dy)..lineTo(c.dx, c.dy + vDir * len);
+      canvas.drawPath(p, corner);
+    }
+  }
+
+  Path _dash(RRect rrect) {
+    final base = Path()..addRRect(rrect);
+    final out = Path();
+    final metrics = base.computeMetrics().first;
+    double d = 0;
+    while (d < metrics.length) { out.addPath(metrics.extractPath(d, d + 10), Offset.zero); d += 18; }
+    return out;
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter old) => false;
 }
 
 class Detection {
@@ -484,77 +558,10 @@ class Detection {
   final double confidence;
   final BBox bbox;
   final int classIndex;
-  Detection({
-    required this.diseaseName,
-    required this.confidence,
-    required this.bbox,
-    required this.classIndex,
-  });
+  Detection({required this.diseaseName, required this.confidence, required this.bbox, required this.classIndex});
 }
 
 class BBox {
-  final double xMin;
-  final double yMin;
-  final double xMax;
-  final double yMax;
-  BBox({
-    required this.xMin,
-    required this.yMin,
-    required this.xMax,
-    required this.yMax,
-  });
-}
-
-class DetectionPainter extends CustomPainter {
-  final List<Detection> detections;
-  final Size imageSize;
-  final Map<String, Color> classColors;
-  final Map<String, String> classNames;
-
-  DetectionPainter({
-    required this.detections,
-    required this.imageSize,
-    required this.classColors,
-    required this.classNames,
-  });
-
-  @override
-  void paint(Canvas canvas, Size size) {
-    final paint = Paint()
-      ..style = PaintingStyle.stroke
-      ..strokeWidth = 3;
-
-    final textStyle = TextStyle(
-      color: Colors.white,
-      fontSize: 14,
-      fontWeight: FontWeight.bold,
-      background: Paint()..color = Colors.red,
-    );
-
-    final textPainter = TextPainter(textDirection: TextDirection.ltr);
-
-    for (final detection in detections) {
-      final color = classColors[detection.diseaseName] ?? Colors.blue;
-      final displayName = classNames[detection.diseaseName] ?? detection.diseaseName;
-      
-      paint.color = color;
-
-      final rect = Rect.fromLTRB(
-        detection.bbox.xMin * size.width,
-        detection.bbox.yMin * size.height,
-        detection.bbox.xMax * size.width,
-        detection.bbox.yMax * size.height,
-      );
-
-      canvas.drawRect(rect, paint);
-
-      final label = '$displayName ${(detection.confidence * 100).toStringAsFixed(1)}%';
-      textPainter.text = TextSpan(text: label, style: textStyle);
-      textPainter.layout();
-      textPainter.paint(canvas, Offset(rect.left, rect.top - 25));
-    }
-  }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+  final double xMin, yMin, xMax, yMax;
+  BBox({required this.xMin, required this.yMin, required this.xMax, required this.yMax});
 }

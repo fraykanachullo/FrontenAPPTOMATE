@@ -1,447 +1,180 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:tomate_detection_app/core/constants/app_constants.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
+import 'package:tomate_detection_app/features/authentication/bloc/auth_bloc.dart';
+import 'package:tomate_detection_app/features/authentication/bloc/auth_event.dart';
 import 'package:tomate_detection_app/features/authentication/data/models/user_model.dart';
+import 'package:tomate_detection_app/core/services/database_service.dart';
+import 'package:tomate_detection_app/core/theme/theme_controller.dart';
 
 class ProfilePage extends StatefulWidget {
   final UserModel? user;
   const ProfilePage({super.key, this.user});
-
   @override
   State<ProfilePage> createState() => _ProfilePageState();
 }
 
 class _ProfilePageState extends State<ProfilePage> {
-  bool _isSynced = true;
+  bool _wifiSync = true;
+  bool _highContrast = false;
+  String _inferenceMode = "edge"; // edge | cloud
+  int _pending = 0;
+  final _db = DatabaseService();
 
   @override
-  Widget build(BuildContext context) {
-    final user = widget.user;
+  void initState(){ super.initState(); _loadPending(); }
+
+  Future<void> _loadPending() async {
+    try{
+      final list=await _db.getPendingDiagnostics();
+      setState(()=> _pending=list.length);
+    }catch(_){}
+  }
+
+  @override
+  Widget build(BuildContext context){
+    final c = AppColors.of(context);
+    final user=widget.user;
+    final name=user?.name ?? "Fray Benjamin Kana Chullo";
+    final email=user?.email ?? "fray.kana@upeu.edu.pe";
+    final role=user?.role ?? "Ingeniero Agrónomo / Técnico";
 
     return Scaffold(
-      backgroundColor: const Color(0xFFF5F7FA),
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        title: Text(
-          'Perfil',
-          style: GoogleFonts.poppins(
-            fontSize: 20,
-            fontWeight: FontWeight.w600,
-            color: Colors.grey.shade800,
+      backgroundColor: c.bg,
+      body: SafeArea(child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(16, 16, 16, 100),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          // Título
+          Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+            Text("Perfil y Configuración", style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.w700, color: c.text)),
+            IconButton(onPressed: (){}, icon: Icon(Icons.info_outline_rounded, color: c.textDim, size: 20), style: IconButton.styleFrom(backgroundColor: c.cardAlt)),
+          ]),
+          const SizedBox(height: 16),
+          // User Header Card
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(color: c.card, borderRadius: BorderRadius.circular(12), border: Border.all(color: c.border)),
+            child: Row(children: [
+              Stack(children: [
+                Container(width: 64,height: 64, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: c.primary, width: 2), image: const DecorationImage(image: NetworkImage("https://lh3.googleusercontent.com/aida-public/AB6AXuDh5wAgyiOZzLXxYJ1zZCCW_6G_uDNXv1U9rxfwQigdYjgBQ6mEoUe5hr_4WFI5LVrpjO-Mh67_7oa5ynaNIYXYU6p5kFcO5mNPsF5dahJKk-fV4OuiqkFKZoqRT8DMUTg3mR5iSbQeWNO7u8uuXJJEu7D3VyPM-rE0XgSK5s6pPcv8FSJ_CS_E10yhc-5KDc7MDq6kaOGvGmH5GmePYmIjUAkwkH7yJhJfCdKP0KdbxE3-w3fQSmO4Nw"), fit: BoxFit.cover))),
+                Positioned(bottom: 0,right: 0, child: Container(width: 14,height: 14, decoration: BoxDecoration(color: c.primary, shape: BoxShape.circle, border: Border.all(color: c.card, width: 2)))),
+              ]),
+              const SizedBox(width: 14),
+              Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(name, style: GoogleFonts.inter(fontSize: 15, fontWeight: FontWeight.w700, color: c.text), maxLines: 1, overflow: TextOverflow.ellipsis),
+                Text(role, style: GoogleFonts.inter(fontSize: 11, color: c.primary)),
+                const SizedBox(height: 2),
+                Row(children: [Icon(Icons.location_on_rounded, color: c.textDim, size: 14), const SizedBox(width: 4), Expanded(child: Text(email.contains("@")? "Fundo El Pedregal - Majes" : email, style: GoogleFonts.inter(fontSize: 11, color: c.textDim), maxLines: 1, overflow: TextOverflow.ellipsis))]),
+              ])),
+              IconButton(onPressed: (){}, icon: Icon(Icons.edit_rounded, color: c.textDim, size: 18), style: IconButton.styleFrom(backgroundColor: c.cardAlt)),
+            ]),
           ),
-        ),
-        actions: [
-          IconButton(
-            icon: Icon(
-              Icons.settings_rounded,
-              color: Colors.grey.shade600,
-            ),
-            onPressed: () {},
-          ),
-        ],
-      ),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-        child: Column(
-          children: [
-            _buildProfileHeader(user),
-            const SizedBox(height: 24),
-            _buildStatsRow(),
-            const SizedBox(height: 24),
-            _buildActionList(),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildProfileHeader(UserModel? user) {
-    final name = user?.name ?? 'Usuario';
-    final email = user?.email ?? 'usuario@email.com';
-    final organization = user?.organization ?? 'Sin organización';
-
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 16,
-            offset: const Offset(0, 4),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          Stack(
-            children: [
-              CircleAvatar(
-                radius: 50,
-                backgroundColor: AppColors.primaryEmerald.withValues(alpha: 0.1),
-                child: Text(
-                  name.isNotEmpty ? name[0].toUpperCase() : 'U',
-                  style: GoogleFonts.poppins(
-                    fontSize: 40,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.primaryEmerald,
-                  ),
-                ),
-              ),
-              Positioned(
-                bottom: 0,
-                right: 0,
-                child: Container(
-                  padding: const EdgeInsets.all(4),
-                  decoration: BoxDecoration(
-                    color: AppColors.primaryEmerald,
-                    shape: BoxShape.circle,
-                    border: Border.all(color: Colors.white, width: 2),
-                  ),
-                  child: const Icon(
-                    Icons.edit_rounded,
-                    size: 16,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          Text(
-            name,
-            style: GoogleFonts.poppins(
-              fontSize: 22,
-              fontWeight: FontWeight.w700,
-              color: Colors.grey.shade900,
-            ),
-          ),
-          Text(
-            email,
-            style: GoogleFonts.poppins(
-              fontSize: 14,
-              color: Colors.grey.shade600,
-            ),
-          ),
-          if (organization.isNotEmpty && organization != 'Sin organización')
-            Container(
-              margin: const EdgeInsets.only(top: 4),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              decoration: BoxDecoration(
-                color: AppColors.primaryEmerald.withValues(alpha: 0.1),
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text(
-                organization,
-                style: GoogleFonts.poppins(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w500,
-                  color: AppColors.primaryEmerald,
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildStatsRow() {
-    return Row(
-      children: [
-        Expanded(
-          child: _buildStatCard(
-            icon: Icons.camera_alt_rounded,
-            value: '432',
-            label: 'Total Scans',
-            color: AppColors.primaryEmerald,
-          ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _buildStatCard(
-            icon: Icons.assignment_rounded,
-            value: '28',
-            label: 'Reports Filed',
-            color: AppColors.primaryEmeraldLight,
-          ),
-        ),
-      ],
-    );
-  }
-
-  Widget _buildStatCard({
-    required IconData icon,
-    required String value,
-    required String label,
-    required Color color,
-  }) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        children: [
-          Icon(icon, color: color, size: 28),
+          const SizedBox(height: 20),
+          // AI Inference
+          Text("Motor de Inferencia de IA".toUpperCase(), style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w700, color: c.textDim, letterSpacing: 0.8)),
           const SizedBox(height: 8),
-          Text(
-            value,
-            style: GoogleFonts.poppins(
-              fontSize: 24,
-              fontWeight: FontWeight.w700,
-              color: Colors.grey.shade900,
-            ),
+          Container(
+            decoration: BoxDecoration(color: c.card, borderRadius: BorderRadius.circular(12), border: Border.all(color: c.border)),
+            child: Column(children: [
+              _radioTile(title: "Edge AI Local (YOLOv8n)", subtitle: "Offline • Latencia: ~9ms", value: "edge", group: _inferenceMode, onChanged: (v)=> setState(()=> _inferenceMode=v!), icon: Icons.offline_bolt_rounded, subtitleColor: c.primary),
+              Divider(height: 1, color: c.border),
+              _radioTile(title: "Cloud Server (Alta Precisión)", subtitle: "Requiere Conexión • Mayor latencia", value: "cloud", group: _inferenceMode, onChanged: (v)=> setState(()=> _inferenceMode=v!), icon: Icons.cloud_rounded, subtitleColor: c.textDim),
+              Divider(height: 1, color: c.border),
+              Padding(padding: const EdgeInsets.all(12), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                Row(children: [Icon(Icons.model_training_rounded, color: c.textDim, size: 20), const SizedBox(width: 10), Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text("Versión del Modelo", style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: c.text)), Text("v2.4 (Tomato_Disease_v2.pt)", style: GoogleFonts.inter(fontSize: 11, color: c.textDim))])]),
+                ElevatedButton.icon(onPressed: (){}, icon: const Icon(Icons.sync_rounded, size: 16), label: Text("Actualizar", style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600)), style: ElevatedButton.styleFrom(backgroundColor: c.cardAlt, foregroundColor: c.primary, side: BorderSide(color: c.border), padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)))),
+              ])),
+            ]),
           ),
-          Text(
-            label,
-            style: GoogleFonts.poppins(
-              fontSize: 12,
-              color: Colors.grey.shade600,
-            ),
+          const SizedBox(height: 20),
+          // Sync
+          Text("Sincronización y Almacenamiento".toUpperCase(), style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w700, color: c.textDim, letterSpacing: 0.8)),
+          const SizedBox(height: 8),
+          Container(
+            decoration: BoxDecoration(color: c.card, borderRadius: BorderRadius.circular(12), border: Border.all(color: c.border)),
+            child: Column(children: [
+              Padding(padding: const EdgeInsets.all(12), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                Row(children: [Icon(Icons.wifi_rounded, color: c.textDim, size: 20), const SizedBox(width: 10), Text("Sincronizar automáticamente en Wi-Fi", style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: c.text))]),
+                Switch(value: _wifiSync, onChanged: (v)=> setState(()=> _wifiSync=v), activeColor: c.primary),
+              ])),
+              Divider(height: 1, color: c.border),
+              Padding(padding: const EdgeInsets.all(12), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                Row(children: [Icon(Icons.cloud_upload_rounded, color: c.textDim, size: 20), const SizedBox(width: 10), Text("$_pending registros pendientes", style: GoogleFonts.inter(fontSize: 12, color: c.text))]),
+                Icon(_pending==0? Icons.check_circle_rounded: Icons.pending_rounded, color: _pending==0? c.primary: const Color(0xFFF59E0B), size: 20),
+              ])),
+              Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: c.cardAlt, borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12))), child: Row(children: [
+                Expanded(child: ElevatedButton(onPressed: _pending==0? null: () async { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Sincronizando..."))); await Future.delayed(const Duration(seconds: 1)); _loadPending(); }, child: Text("Sincronizar Ahora", style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600)), style: ElevatedButton.styleFrom(backgroundColor: c.primary, foregroundColor: c.onPrimary, padding: const EdgeInsets.symmetric(vertical: 12)))),
+                const SizedBox(width: 8),
+                Expanded(child: OutlinedButton(onPressed: () async { await _db.getPendingDiagnostics(); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Caché limpiada"))); }, child: Text("Limpiar Caché", style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: c.text)), style: OutlinedButton.styleFrom(side: BorderSide(color: c.border), padding: const EdgeInsets.symmetric(vertical: 12)))),
+              ])),
+            ]),
           ),
-        ],
-      ),
+          const SizedBox(height: 20),
+          // Field Preferences
+          Text("Preferencias de Campo".toUpperCase(), style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w700, color: c.textDim, letterSpacing: 0.8)),
+          const SizedBox(height: 8),
+          Container(
+            decoration: BoxDecoration(color: c.card, borderRadius: BorderRadius.circular(12), border: Border.all(color: c.border)),
+            child: Column(children: [
+              Padding(padding: const EdgeInsets.all(12), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
+                Row(children: [Icon(Icons.contrast_rounded, color: c.textDim, size: 20), const SizedBox(width: 10), Text("Modo Alto Contraste (Exteriores)", style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: c.text))]),
+                Switch(value: _highContrast, onChanged: (v)=> setState(()=> _highContrast=v), activeColor: c.primary),
+              ])),
+              Divider(height: 1, color: c.border),
+              ListTile(
+                leading: Icon(Icons.language_rounded, color: c.textDim),
+                title: Text("Idioma", style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: c.text)),
+                trailing: Row(mainAxisSize: MainAxisSize.min, children: [Text("Español", style: GoogleFonts.inter(fontSize: 12, color: c.textDim)), Icon(Icons.expand_more_rounded, color: c.textDim)]),
+                onTap: (){},
+              ),
+            ]),
+          ),
+          const SizedBox(height: 24),
+          // Logout
+          SizedBox(width: double.infinity, child: OutlinedButton.icon(
+            onPressed: ()=> _confirmLogout(context),
+            icon: Icon(Icons.logout_rounded, color: c.danger),
+            label: Text("Cerrar Sesión", style: GoogleFonts.inter(fontSize: 14, fontWeight: FontWeight.w600, color: c.danger)),
+            style: OutlinedButton.styleFrom(padding: const EdgeInsets.symmetric(vertical: 14), side: const BorderSide(color: Color(0xFF93000A)), backgroundColor: const Color(0xFF93000A).withValues(alpha: 0.15), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
+          )),
+          const SizedBox(height: 24),
+          Center(child: Text("Tomate AI v1.0.4 - UPeU Research Project", style: GoogleFonts.inter(fontSize: 11, color: c.textDim))),
+        ]),
+      )),
     );
   }
 
-  Widget _buildActionList() {
-    return Column(
-      children: [
-        _buildActionItem(
-          icon: Icons.manage_accounts_rounded,
-          title: 'Configuración de Cuenta',
-          onTap: () {},
-        ),
-        _buildActionItem(
-          icon: Icons.grass_rounded,
-          title: 'Gestión de Parcelas',
-          subtitle: 'SECTOR B',
-          onTap: () {},
-        ),
-        _buildActionItem(
-          icon: Icons.notifications_active_rounded,
-          title: 'Preferencias de Notificaciones',
-          onTap: () {},
-        ),
-        _buildSyncItem(),
-        _buildActionItem(
-          icon: Icons.help_center_rounded,
-          title: 'Ayuda y Soporte',
-          onTap: () {},
-        ),
-        const SizedBox(height: 16),
-        _buildLogoutButton(),
-        const SizedBox(height: 32),
-        Text(
-          'AgriScan Pro v2.4.1',
-          style: GoogleFonts.poppins(
-            fontSize: 12,
-            color: Colors.grey.shade400,
-          ),
-        ),
+  Widget _radioTile({required String title, required String subtitle, required String value, required String group, required Function(String?) onChanged, required IconData icon, required Color subtitleColor}){
+    final c = AppColors.of(context);
+    final selected=value==group;
+    return InkWell(
+      onTap: ()=> onChanged(value),
+      child: Padding(padding: const EdgeInsets.all(12), child: Row(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Container(width: 20,height: 20, decoration: BoxDecoration(shape: BoxShape.circle, border: Border.all(color: selected? c.primary: c.border, width: 2)), child: selected? Center(child: Container(width: 10,height: 10, decoration: BoxDecoration(color: c.primary, shape: BoxShape.circle))): null),
+        const SizedBox(width: 12),
+        Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Text(title, style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600, color: c.text)),
+          const SizedBox(height: 2),
+          Row(children: [Icon(icon, color: subtitleColor, size: 14), const SizedBox(width: 4), Expanded(child: Text(subtitle, style: GoogleFonts.inter(fontSize: 11, color: c.textDim)))]),
+        ])),
+      ])),
+    );
+  }
+
+  void _confirmLogout(BuildContext context){
+    final c = AppColors.of(context);
+    showDialog(context: context, builder: (_)=> AlertDialog(
+      backgroundColor: c.card,
+      title: Text("Cerrar Sesión", style: GoogleFonts.inter(color: c.text)),
+      content: Text("¿Seguro que quieres salir?", style: GoogleFonts.inter(color: c.textDim)),
+      actions: [
+        TextButton(onPressed: ()=> Navigator.pop(context), child: Text("Cancelar", style: GoogleFonts.inter(color: c.textDim))),
+        ElevatedButton(onPressed: (){
+          context.read<AuthBloc>().add(LogoutRequested());
+          Navigator.pop(context);
+          Navigator.pushReplacementNamed(context, '/login');
+        }, style: ElevatedButton.styleFrom(backgroundColor: const Color(0xFF93000A)), child: Text("Salir", style: GoogleFonts.inter(color: Colors.white))),
       ],
-    );
-  }
-
-  Widget _buildActionItem({
-    required IconData icon,
-    required String title,
-    String? subtitle,
-    required VoidCallback onTap,
-  }) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
-            blurRadius: 8,
-          ),
-        ],
-      ),
-      child: ListTile(
-        leading: Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: AppColors.primaryEmerald.withValues(alpha: 0.1),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Icon(icon, color: AppColors.primaryEmerald, size: 22),
-        ),
-        title: Text(
-          title,
-          style: GoogleFonts.poppins(
-            fontSize: 14,
-            fontWeight: FontWeight.w500,
-            color: Colors.grey.shade800,
-          ),
-        ),
-        subtitle: subtitle != null
-            ? Text(
-                subtitle,
-                style: GoogleFonts.poppins(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.primaryEmerald,
-                ),
-              )
-            : null,
-        trailing: Icon(
-          Icons.chevron_right_rounded,
-          color: Colors.grey.shade400,
-        ),
-        onTap: onTap,
-      ),
-    );
-  }
-
-  Widget _buildSyncItem() {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 8),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
-            blurRadius: 8,
-          ),
-        ],
-      ),
-      child: ListTile(
-        leading: Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: AppColors.primaryEmerald.withValues(alpha: 0.1),
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: const Icon(
-            Icons.sync_rounded,
-            color: AppColors.primaryEmerald,
-            size: 22,
-          ),
-        ),
-        title: Text(
-          'Sincronizar Datos',
-          style: GoogleFonts.poppins(
-            fontSize: 14,
-            fontWeight: FontWeight.w500,
-            color: Colors.grey.shade800,
-          ),
-        ),
-        subtitle: Text(
-          'Última sincronización: hace 2m',
-          style: GoogleFonts.poppins(
-            fontSize: 11,
-            color: Colors.grey.shade500,
-          ),
-        ),
-        trailing: Switch(
-          value: _isSynced,
-          onChanged: (value) {
-            setState(() => _isSynced = value);
-          },
-          activeColor: AppColors.primaryEmerald,
-        ),
-      ),
-    );
-  }
-
-  Widget _buildLogoutButton() {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.02),
-            blurRadius: 8,
-          ),
-        ],
-      ),
-      child: ListTile(
-        leading: Container(
-          padding: const EdgeInsets.all(8),
-          decoration: BoxDecoration(
-            color: Colors.red.shade50,
-            borderRadius: BorderRadius.circular(10),
-          ),
-          child: Icon(
-            Icons.logout_rounded,
-            color: Colors.red.shade600,
-            size: 22,
-          ),
-        ),
-        title: Text(
-          'Cerrar Sesión',
-          style: GoogleFonts.poppins(
-            fontSize: 14,
-            fontWeight: FontWeight.w600,
-            color: Colors.red.shade600,
-          ),
-        ),
-        onTap: () {
-          showDialog(
-            context: context,
-            builder: (context) => AlertDialog(
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(20),
-              ),
-              title: Text(
-                'Confirmar Salida',
-                style: GoogleFonts.poppins(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              content: Text(
-                '¿Estás seguro de que quieres cerrar sesión?',
-                style: GoogleFonts.poppins(
-                  fontSize: 14,
-                  color: Colors.grey.shade600,
-                ),
-              ),
-              actions: [
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: Text(
-                    'Cancelar',
-                    style: GoogleFonts.poppins(
-                      color: Colors.grey.shade600,
-                    ),
-                  ),
-                ),
-                ElevatedButton(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    Navigator.pushReplacementNamed(context, '/login');
-                  },
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.red.shade600,
-                    foregroundColor: Colors.white,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                  ),
-                  child: const Text('Cerrar Sesión'),
-                ),
-              ],
-            ),
-          );
-        },
-      ),
-    );
+    ));
   }
 }

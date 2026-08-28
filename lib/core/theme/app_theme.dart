@@ -3,6 +3,28 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:tomate_detection_app/core/constants/app_constants.dart';
 
 class AppTheme {
+  static ThemeData highContrastTheme = ThemeData(
+    useMaterial3: true,
+    brightness: Brightness.dark,
+    scaffoldBackgroundColor: const Color(0xFF000000),
+    primaryColor: const Color(0xFFFFD600),
+    colorScheme: const ColorScheme.dark(
+      primary: Color(0xFFFFD600),
+      onPrimary: Colors.black,
+      surface: Color(0xFF000000),
+      onSurface: Color(0xFFFFFFFF),
+      secondary: Color(0xFFAAAAAA),
+    ),
+    textTheme: GoogleFonts.robotoTextTheme(ThemeData.dark().textTheme).copyWith(
+      bodyLarge: const TextStyle(fontSize: 16, color: Color(0xFFFFFFFF)),
+      bodyMedium: const TextStyle(fontSize: 16, color: Color(0xFFFFFFFF)),
+      labelLarge: const TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.black),
+    ),
+    elevatedButtonTheme: ElevatedButtonThemeData(
+      style: ElevatedButton.styleFrom(backgroundColor: Color(0xFFFFD600), foregroundColor: Colors.black, textStyle: TextStyle(fontSize: 20, fontWeight: FontWeight.bold), minimumSize: Size(48, 48)),
+    ),
+  );
+
   static ThemeData lightTheme = ThemeData(
     useMaterial3: true,
     brightness: Brightness.light,

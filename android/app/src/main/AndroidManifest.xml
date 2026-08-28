@@ -1,8 +1,36 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Red: comunicación con backend FastAPI -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+
+    <!-- Cámara: vista previa en tiempo real + captura -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-feature android:name="android.hardware.camera" android:required="true"/>
+    <uses-feature android:name="android.hardware.camera.autofocus" android:required="false"/>
+
+    <!-- Flash / para resolver compatibilidad en algunos fabricantes -->
+    <uses-permission android:name="android.permission.FLASHLIGHT"/>
+
+    <!-- Almacenamiento: imágenes de diagnóstico guardadas en el dispositivo -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" android:maxSdkVersion="32"/>
+
+    <!-- Geolocalización: etiquetar scans con coordenadas del fundo -->
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
+    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"/>
+
     <application
-        android:label="tomate_detection_app"
+        android:label="AgriScan Pro"
+        android:usesCleartextTraffic="true"
         android:name="${applicationName}"
-        android:icon="@mipmap/ic_launcher">
+        android:icon="@mipmap/ic_launcher"
+        android:requestLegacyExternalStorage="true">
+        <!-- Desactiva Impeller/Vulkan: evita "Invalid external texture" que
+             provoca la cámara negra en Android. Fuerza renderizador Skia. -->
+        <meta-data
+            android:name="io.flutter.embedding.android.EnableImpeller"
+            android:value="false" />
         <activity
             android:name=".MainActivity"
             android:exported="true"
