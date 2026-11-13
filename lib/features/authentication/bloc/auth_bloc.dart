@@ -18,11 +18,11 @@ class AuthBloc extends Bloc<AuthEvent, AuthState> {
     on<RegisterRequested>((event, emit) async {
       emit(AuthLoading());
       final res = await registerUseCase(RegisterParams(event.name, event.email, event.password, event.role));
-      res.fold((f) => emit(AuthError(f.message)), (u) async {
-        // auto-login tras registro
-        final login = await loginUseCase(LoginParams(event.email, event.password));
-        login.fold((f) => emit(AuthError("Registrado, pero login falló: ${f.message}")), (user) => emit(AuthAuthenticated(user)));
-      });
+      final failure = res.fold((f) => f, (_) => null);
+      if (failure != null) { emit(AuthError(failure.message)); return; }
+      // auto-login tras registro (await fuera del fold para que emit ocurra dentro del handler)
+      final login = await loginUseCase(LoginParams(event.email, event.password));
+      login.fold((f) => emit(AuthError("Registrado, pero login falló: ${f.message}")), (user) => emit(AuthAuthenticated(user)));
     });
     on<LogoutRequested>((event, emit) async {
       await repo.logout();

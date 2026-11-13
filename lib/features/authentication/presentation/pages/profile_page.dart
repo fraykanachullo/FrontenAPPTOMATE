@@ -1,3 +1,5 @@
+import 'package:tomate_detection_app/core/constants/model_info.dart';
+import 'package:tomate_detection_app/core/services/sync_service.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -17,7 +19,7 @@ class ProfilePage extends StatefulWidget {
 class _ProfilePageState extends State<ProfilePage> {
   bool _wifiSync = true;
   bool _highContrast = false;
-  String _inferenceMode = "edge"; // edge | cloud
+  String _inferenceMode = InferenceSettings.mode; // auto | edge
   int _pending = 0;
   final _db = DatabaseService();
 
@@ -29,6 +31,20 @@ class _ProfilePageState extends State<ProfilePage> {
       final list=await _db.getPendingDiagnostics();
       setState(()=> _pending=list.length);
     }catch(_){}
+  }
+
+  Future<void> _setMode(String? m) async {
+    if (m == null) return;
+    await InferenceSettings.save(m);
+    setState(() => _inferenceMode = m);
+  }
+
+  Future<void> _syncNow() async {
+    ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Sincronizando...")));
+    final n = await SyncService.syncPending();
+    await _loadPending();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(n > 0 ? "$n registro(s) subidos al servidor" : "No se pudo conectar con el servidor")));
   }
 
   @override
@@ -76,13 +92,12 @@ class _ProfilePageState extends State<ProfilePage> {
           Container(
             decoration: BoxDecoration(color: c.card, borderRadius: BorderRadius.circular(12), border: Border.all(color: c.border)),
             child: Column(children: [
-              _radioTile(title: "Edge AI Local (YOLOv8n)", subtitle: "Offline • Latencia: ~9ms", value: "edge", group: _inferenceMode, onChanged: (v)=> setState(()=> _inferenceMode=v!), icon: Icons.offline_bolt_rounded, subtitleColor: c.primary),
+              _radioTile(title: "Automático (recomendado)", subtitle: "Servidor con internet • Celular sin internet", value: "auto", group: _inferenceMode, onChanged: _setMode, icon: Icons.cloud_sync_rounded, subtitleColor: c.primary),
               Divider(height: 1, color: c.border),
-              _radioTile(title: "Cloud Server (Alta Precisión)", subtitle: "Requiere Conexión • Mayor latencia", value: "cloud", group: _inferenceMode, onChanged: (v)=> setState(()=> _inferenceMode=v!), icon: Icons.cloud_rounded, subtitleColor: c.textDim),
+              _radioTile(title: "Solo en el celular", subtitle: "Sin enviar fotos al analizar • Se sincronizan después", value: "edge", group: _inferenceMode, onChanged: _setMode, icon: Icons.offline_bolt_rounded, subtitleColor: c.textDim),
               Divider(height: 1, color: c.border),
               Padding(padding: const EdgeInsets.all(12), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Row(children: [Icon(Icons.model_training_rounded, color: c.textDim, size: 20), const SizedBox(width: 10), Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text("Versión del Modelo", style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: c.text)), Text("v2.4 (Tomato_Disease_v2.pt)", style: GoogleFonts.inter(fontSize: 11, color: c.textDim))])]),
-                ElevatedButton.icon(onPressed: (){}, icon: const Icon(Icons.sync_rounded, size: 16), label: Text("Actualizar", style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600)), style: ElevatedButton.styleFrom(backgroundColor: c.cardAlt, foregroundColor: c.primary, side: BorderSide(color: c.border), padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(20)))),
+                Row(children: [Icon(Icons.model_training_rounded, color: c.textDim, size: 20), const SizedBox(width: 10), Column(crossAxisAlignment: CrossAxisAlignment.start, children: [Text("Versión del Modelo", style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: c.text)), Text("${ModelInfo.label} • ${ModelInfo.name}${ModelInfo.accuracyMobile == null ? '' : ' • acierto ${(ModelInfo.accuracyMobile! * 100).toStringAsFixed(0)}%'}", style: GoogleFonts.inter(fontSize: 11, color: c.textDim))])]),
               ])),
             ]),
           ),
@@ -94,18 +109,17 @@ class _ProfilePageState extends State<ProfilePage> {
             decoration: BoxDecoration(color: c.card, borderRadius: BorderRadius.circular(12), border: Border.all(color: c.border)),
             child: Column(children: [
               Padding(padding: const EdgeInsets.all(12), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Row(children: [Icon(Icons.wifi_rounded, color: c.textDim, size: 20), const SizedBox(width: 10), Text("Sincronizar automáticamente en Wi-Fi", style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: c.text))]),
+                // Expanded: en pantallas angostas el texto baja de linea en vez de desbordar
+                Expanded(child: Row(children: [Icon(Icons.wifi_rounded, color: c.textDim, size: 20), const SizedBox(width: 10), Expanded(child: Text("Sincronizar automáticamente en Wi-Fi", style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: c.text)))])),
                 Switch(value: _wifiSync, onChanged: (v)=> setState(()=> _wifiSync=v), activeColor: c.primary),
               ])),
               Divider(height: 1, color: c.border),
               Padding(padding: const EdgeInsets.all(12), child: Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
-                Row(children: [Icon(Icons.cloud_upload_rounded, color: c.textDim, size: 20), const SizedBox(width: 10), Text("$_pending registros pendientes", style: GoogleFonts.inter(fontSize: 12, color: c.text))]),
+                Expanded(child: Row(children: [Icon(Icons.cloud_upload_rounded, color: c.textDim, size: 20), const SizedBox(width: 10), Expanded(child: Text("$_pending registros pendientes", style: GoogleFonts.inter(fontSize: 12, color: c.text)))])),
                 Icon(_pending==0? Icons.check_circle_rounded: Icons.pending_rounded, color: _pending==0? c.primary: const Color(0xFFF59E0B), size: 20),
               ])),
               Container(padding: const EdgeInsets.all(8), decoration: BoxDecoration(color: c.cardAlt, borderRadius: const BorderRadius.vertical(bottom: Radius.circular(12))), child: Row(children: [
-                Expanded(child: ElevatedButton(onPressed: _pending==0? null: () async { ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Sincronizando..."))); await Future.delayed(const Duration(seconds: 1)); _loadPending(); }, child: Text("Sincronizar Ahora", style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600)), style: ElevatedButton.styleFrom(backgroundColor: c.primary, foregroundColor: c.onPrimary, padding: const EdgeInsets.symmetric(vertical: 12)))),
-                const SizedBox(width: 8),
-                Expanded(child: OutlinedButton(onPressed: () async { await _db.getPendingDiagnostics(); ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text("Caché limpiada"))); }, child: Text("Limpiar Caché", style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600, color: c.text)), style: OutlinedButton.styleFrom(side: BorderSide(color: c.border), padding: const EdgeInsets.symmetric(vertical: 12)))),
+                Expanded(child: ElevatedButton(onPressed: _pending==0? null: _syncNow, child: Text("Sincronizar Ahora", style: GoogleFonts.inter(fontSize: 12, fontWeight: FontWeight.w600)), style: ElevatedButton.styleFrom(backgroundColor: c.primary, foregroundColor: c.onPrimary, padding: const EdgeInsets.symmetric(vertical: 12)))),
               ])),
             ]),
           ),

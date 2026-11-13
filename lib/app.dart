@@ -1,3 +1,4 @@
+import 'package:tomate_detection_app/core/services/sync_service.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:tomate_detection_app/core/theme/app_theme.dart';
@@ -68,6 +69,7 @@ class _MainNavigationScreenState extends State<MainNavigationScreen> {
   @override
   void initState() {
     super.initState();
+    SyncService.start(); // sube diagnosticos hechos sin internet
     _pages = [
       HomePage(onNavigate: _handleHomeNavigate),
       const AnalyticsPage(),

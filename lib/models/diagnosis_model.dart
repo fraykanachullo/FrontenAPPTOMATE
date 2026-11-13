@@ -8,6 +8,10 @@ class DiagnosisModel {
   final DateTime createdAt;
   final bool isSynced;
   final String? userNotes;
+  // JSON: [{label, confidence, bbox:[xMin,yMin,xMax,yMax]}] normalizado 0..1
+  final String? detectionsJson;
+  // Id en el servidor (null si aun no se subio)
+  final String? serverId;
 
   DiagnosisModel({
     required this.diagnosticId,
@@ -19,6 +23,8 @@ class DiagnosisModel {
     required this.createdAt,
     this.isSynced = false,
     this.userNotes,
+    this.detectionsJson,
+    this.serverId,
   });
 
   Map<String, dynamic> toMap() {
@@ -32,6 +38,8 @@ class DiagnosisModel {
       'created_at': createdAt.toIso8601String(),
       'is_synced': isSynced ? 1 : 0,
       'user_notes': userNotes,
+      'detections_json': detectionsJson,
+      'server_id': serverId,
     };
   }
 
@@ -46,6 +54,8 @@ class DiagnosisModel {
       createdAt: DateTime.parse(map['created_at']),
       isSynced: map['is_synced'] == 1,
       userNotes: map['user_notes'],
+      detectionsJson: map['detections_json'],
+      serverId: map['server_id'],
     );
   }
 }

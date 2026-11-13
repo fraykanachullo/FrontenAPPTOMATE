@@ -1,6 +1,5 @@
 import 'package:sqflite/sqflite.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:tomate_detection_app/features/authentication/data/models/user_model.dart';
 
 class DatabaseService {
   static final DatabaseService _instance = DatabaseService._internal();
@@ -20,7 +19,7 @@ class DatabaseService {
     final path = '${directory.path}/tomate_detection.db';
     return await openDatabase(
       path,
-      version: 2, // ✅ Versión 2
+      version: 5, // v3: detections_json; v4: sin tabla users; v5: server_id
       onCreate: _onCreate,
       onUpgrade: _onUpgrade, // ✅ Agregar onUpgrade
     );
@@ -39,37 +38,26 @@ class DatabaseService {
         longitude REAL,
         created_at TEXT,
         is_synced INTEGER DEFAULT 0,
-        user_notes TEXT
+        user_notes TEXT,
+        detections_json TEXT,
+        server_id TEXT
       )
     ''');
 
-    await db.execute('''
-      CREATE TABLE users(
-        id TEXT PRIMARY KEY,
-        name TEXT NOT NULL,
-        email TEXT UNIQUE NOT NULL,
-        password TEXT NOT NULL,
-        organization TEXT,
-        role TEXT DEFAULT 'agricultor',
-        created_at TEXT NOT NULL
-      )
-    ''');
   }
 
   // ✅ ACTUALIZAR BASE DE DATOS EXISTENTE
   Future<void> _onUpgrade(Database db, int oldVersion, int newVersion) async {
-    if (oldVersion < 2) {
-      await db.execute('''
-        CREATE TABLE IF NOT EXISTS users(
-          id TEXT PRIMARY KEY,
-          name TEXT NOT NULL,
-          email TEXT UNIQUE NOT NULL,
-          password TEXT NOT NULL,
-          organization TEXT,
-          role TEXT DEFAULT 'agricultor',
-          created_at TEXT NOT NULL
-        )
-      ''');
+    if (oldVersion < 3) {
+      await db.execute('ALTER TABLE diagnostics ADD COLUMN detections_json TEXT');
+    }
+    if (oldVersion < 4) {
+      // Los usuarios viven en el backend; esta tabla guardaba contraseñas en texto plano
+      await db.execute('DROP TABLE IF EXISTS users');
+    }
+    if (oldVersion < 5) {
+      // Id del diagnostico en el servidor: evita duplicados al descargar el historial
+      await db.execute('ALTER TABLE diagnostics ADD COLUMN server_id TEXT');
     }
   }
 
@@ -166,6 +154,27 @@ class DatabaseService {
     );
   }
 
+  Future<void> setServerId(String diagnosticId, String serverId) async {
+    final db = await database;
+    await db.update('diagnostics', {'server_id': serverId, 'is_synced': 1},
+        where: 'diagnostic_id = ?', whereArgs: [diagnosticId]);
+  }
+
+  Future<Set<String>> getServerIds() async {
+    final db = await database;
+    final rows = await db.query('diagnostics', columns: ['server_id'], where: 'server_id IS NOT NULL');
+    return rows.map((r) => r['server_id'] as String).toSet();
+  }
+
+  /// Al cerrar sesion: borra lo que ya esta en el servidor (se puede volver a
+  /// descargar) y deja los pendientes de subir. Devuelve las imagenes borradas.
+  Future<List<String>> deleteSynced() async {
+    final db = await database;
+    final rows = await db.query('diagnostics', columns: ['image_path'], where: 'is_synced = 1');
+    await db.delete('diagnostics', where: 'is_synced = 1');
+    return rows.map((r) => r['image_path'] as String?).whereType<String>().toList();
+  }
+
   // =====================================================
   // OBTENER TODOS LOS DIAGNÓSTICOS (SIN FILTROS)
   // =====================================================
@@ -213,50 +222,5 @@ class DatabaseService {
       stats[row['disease'] as String] = row['count'] as int;
     }
     return stats;
-  }
-
-  // =====================================================
-  // MÉTODOS PARA USUARIOS
-  // =====================================================
-  
-  Future<void> saveUser(UserModel user) async {
-    final db = await database;
-    await db.insert(
-      'users',
-      user.toMap(),
-      conflictAlgorithm: ConflictAlgorithm.replace,
-    );
-  }
-
-  Future<UserModel?> getUserByEmail(String email) async {
-    final db = await database;
-    final result = await db.query(
-      'users',
-      where: 'email = ?',
-      whereArgs: [email],
-    );
-    if (result.isEmpty) return null;
-    return UserModel.fromMap(result.first);
-  }
-
-  Future<UserModel?> getUserById(String id) async {
-    final db = await database;
-    final result = await db.query(
-      'users',
-      where: 'id = ?',
-      whereArgs: [id],
-    );
-    if (result.isEmpty) return null;
-    return UserModel.fromMap(result.first);
-  }
-
-  Future<bool> userExists(String email) async {
-    final db = await database;
-    final result = await db.query(
-      'users',
-      where: 'email = ?',
-      whereArgs: [email],
-    );
-    return result.isNotEmpty;
   }
 }

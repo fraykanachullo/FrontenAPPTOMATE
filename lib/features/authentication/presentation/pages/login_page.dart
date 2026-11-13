@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:tomate_detection_app/core/constants/api_constants.dart';
 import 'package:tomate_detection_app/features/authentication/bloc/auth_bloc.dart';
 import 'package:tomate_detection_app/features/authentication/bloc/auth_event.dart';
 import 'package:tomate_detection_app/features/authentication/bloc/auth_state.dart';
@@ -27,6 +28,30 @@ class _LoginPageState extends State<LoginPage> {
       return;
     }
     context.read<AuthBloc>().add(LoginRequested(_email.text.trim(), _pass.text));
+  }
+
+  // Cambiar la URL del backend sin recompilar (p.ej. al cambiar de red Wi-Fi)
+  Future<void> _editServer() async {
+    final ctrl = TextEditingController(text: ApiConstants.baseUrl);
+    final url = await showDialog<String>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text("Servidor"),
+        content: TextField(
+          controller: ctrl,
+          keyboardType: TextInputType.url,
+          decoration: const InputDecoration(hintText: "http://192.168.1.40:8000", helperText: "USB: http://localhost:8000 (adb reverse). Wi-Fi: IP de la PC y puerto 8000"),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, ApiConstants.defaultBaseUrl), child: const Text("Por defecto")),
+          TextButton(onPressed: () => Navigator.pop(ctx), child: const Text("Cancelar")),
+          FilledButton(onPressed: () => Navigator.pop(ctx, ctrl.text), child: const Text("Guardar")),
+        ],
+      ),
+    );
+    if (url == null || url.trim().isEmpty) return;
+    await ApiConstants.save(url);
+    if (mounted) setState(() {});
   }
 
   @override
@@ -103,7 +128,14 @@ class _LoginPageState extends State<LoginPage> {
                     GestureDetector(onTap: () => Navigator.pushNamed(context, '/register'), child: Text("Crear una Cuenta", style: GoogleFonts.poppins(fontSize: 13, fontWeight: FontWeight.w700, color: const Color(0xFF78DC77)))),
                   ]),
                   const SizedBox(height: 16),
-                  Text("Backend: 192.168.1.53:8000", style: GoogleFonts.poppins(fontSize: 10, color: const Color(0xFFBECAB9).withValues(alpha: 0.5))),
+                  GestureDetector(
+                    onTap: _editServer,
+                    child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
+                      Text("Servidor: ${ApiConstants.baseUrl}", style: GoogleFonts.poppins(fontSize: 10, color: const Color(0xFFBECAB9).withValues(alpha: 0.6))),
+                      const SizedBox(width: 4),
+                      Icon(Icons.edit_rounded, size: 12, color: const Color(0xFFBECAB9).withValues(alpha: 0.6)),
+                    ]),
+                  ),
                   const SizedBox(height: 24),
                 ]),
               ),

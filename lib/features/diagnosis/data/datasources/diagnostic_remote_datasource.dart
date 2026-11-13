@@ -17,8 +17,14 @@ class DiagnosticRemoteDataSource {
     throw DioException(requestOptions: r.requestOptions, response: r);
   }
 
-  Future<List<dynamic>> getDiagnostics({int limit = 20, int offset = 0}) async {
-    final r = await dioClient.dio.get(ApiConstants.diagnostics, queryParameters: {"limit": limit, "offset": offset});
+  Future<List<dynamic>> getDiagnostics({int limit = 20, int offset = 0, bool mine = true}) async {
+    final r = await dioClient.dio.get(ApiConstants.diagnostics, queryParameters: {"limit": limit, "offset": offset, "mine": mine});
     return r.data as List<dynamic>;
+  }
+
+  /// Descarga la imagen de un diagnostico (URL relativa /uploads/... o absoluta).
+  Future<void> downloadImage(String url, String savePath) async {
+    final full = url.startsWith('http') ? url : '${ApiConstants.baseUrl}$url';
+    await dioClient.dio.download(full, savePath);
   }
 }

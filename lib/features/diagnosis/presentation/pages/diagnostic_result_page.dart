@@ -2,6 +2,7 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image/image.dart' as img;
+import 'package:tomate_detection_app/core/constants/disease_info.dart';
 import 'package:tomate_detection_app/core/theme/theme_controller.dart';
 import 'scanner_page.dart' show Detection;
 
@@ -13,25 +14,39 @@ class DiagnosticResultPage extends StatelessWidget {
   final List<Detection> detections;
   final Map<String, String> displayNames;
   final Map<String, Color> colors;
+  // 'servidor' o 'celular' (modelo offline); null en registros antiguos
+  final String? source;
   const DiagnosticResultPage({
     super.key,
     required this.imageBytes,
     required this.detections,
     required this.displayNames,
     required this.colors,
+    this.source,
   });
 
   @override
   Widget build(BuildContext context) {
     final c = AppColors.of(context);
-    final hasDisease = detections.any((d) => d.diseaseName != 'sana');
-    final primary = hasDisease
-        ? detections.firstWhere((d) => d.diseaseName != 'sana', orElse: () => detections.first)
-        : null;
-    final label = primary != null ? (displayNames[primary.diseaseName] ?? primary.diseaseName) : "Hoja Sana";
-    final conf = primary != null ? (primary.confidence * 100).toStringAsFixed(1) : "99.0";
-    final severe = primary != null && primary.confidence > 0.75;
-    final sevLabel = primary == null ? "LEVE" : (severe ? "ALTA" : (primary.confidence > 0.55 ? "MEDIA" : "LEVE"));
+    final boxes = detections.where((d) => d.bbox.xMax > d.bbox.xMin).toList();
+    final sick = detections.where((d) => d.diseaseName != 'sana').toList()
+      ..sort((a, b) => b.confidence.compareTo(a.confidence));
+    final hasDisease = sick.isNotEmpty;
+    final primary = hasDisease ? sick.first : null;
+    final key = primary?.diseaseName ?? 'sana';
+    final info = DiseaseInfo.of(key);
+    // Sin cajas el modelo no vio sintomas ni hojas sanas: no afirmar "Hoja Sana"
+    final noDets = boxes.isEmpty;
+    final label = primary != null ? (displayNames[primary.diseaseName] ?? primary.diseaseName) : (noDets ? "Sin detecciones" : "Hoja Sana");
+    // Confianza del modelo en la deteccion principal (sin cajas = no hay valor que mostrar)
+    final sanaBox = boxes.where((d) => d.diseaseName == 'sana').toList();
+    final confValue = primary?.confidence ?? (sanaBox.isNotEmpty ? sanaBox.first.confidence : null);
+    final conf = confValue != null ? "${(confValue * 100).toStringAsFixed(1)}%" : "—";
+    // Otras clases detectadas en la misma imagen (p. ej. mildiu + polilla)
+    final others = <String>{for (final d in sick.skip(1)) if (d.diseaseName != key) d.diseaseName}
+        .map((k) => displayNames[k] ?? k)
+        .toList();
+    final sevLabel = primary == null ? "SANA" : (primary.confidence > 0.75 ? "ALTA" : (primary.confidence > 0.55 ? "MEDIA" : "BAJA"));
 
     return Scaffold(
       backgroundColor: c.bg,
@@ -65,7 +80,7 @@ class DiagnosticResultPage extends StatelessWidget {
                   child: Stack(children: [
                     // Usar la proporción REAL de la imagen capturada para que las
                     // cajas YOLO (normalizadas 0..1) coincidan exactamente.
-                    AspectRatio(aspectRatio: _imageAspectRatio(), child: Image.memory(imageBytes, fit: BoxFit.cover, width: double.infinity)),
+                    AspectRatio(aspectRatio: _imageAspectRatio(), child: Image.memory(imageBytes, fit: BoxFit.fill, width: double.infinity)),
                     // Superponer cajas reales exactas
                     Positioned.fill(child: IgnorePointer(child: CustomPaint(painter: _BboxPainter(detections, displayNames, colors)))),
                   ]),
@@ -80,18 +95,26 @@ class DiagnosticResultPage extends StatelessWidget {
                       Row(children: [Icon(Icons.coronavirus_rounded, color: hasDisease ? c.danger : c.primary, size: 16), const SizedBox(width: 6), Text("Resultado del Escaneo", style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: c.textDim, letterSpacing: 0.8))]),
                       const SizedBox(height: 4),
                       Text(label, style: GoogleFonts.inter(fontSize: 18, fontWeight: FontWeight.w700, color: hasDisease ? c.danger : c.primary)),
-                      if (detections.isNotEmpty) ...[
+                      if (info.scientific.isNotEmpty)
+                        Text("${info.scientific} · ${info.type}", style: GoogleFonts.inter(fontSize: 11, fontStyle: FontStyle.italic, color: c.textDim)),
+                      if (others.isNotEmpty) ...[
                         const SizedBox(height: 4),
-                        Text("${detections.length} box(s) detectadas por el modelo YOLOv8", style: GoogleFonts.inter(fontSize: 11, color: c.textDim)),
+                        Text("También se detectó: ${others.join(', ')}", style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600, color: c.warn)),
                       ],
+                      const SizedBox(height: 4),
+                      Text(
+                        "${boxes.length} detección(es)"
+                        "${source == null ? '' : source == 'celular' ? ' · analizado en el celular (sin internet)' : ' · analizado en el servidor'}",
+                        style: GoogleFonts.inter(fontSize: 11, color: c.textDim),
+                      ),
                     ])),
                     const SizedBox(width: 12),
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                       decoration: BoxDecoration(color: c.primary.withValues(alpha: 0.15), borderRadius: BorderRadius.circular(8), border: Border.all(color: c.primary)),
                       child: Column(children: [
-                        Text("$conf%", style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w700, color: c.primary)),
-                        Text("Precisión", style: GoogleFonts.inter(fontSize: 9, color: c.primary)),
+                        Text(conf, style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w700, color: c.primary)),
+                        Text("Confianza", style: GoogleFonts.inter(fontSize: 9, color: c.primary)),
                       ]),
                     ),
                   ]),
@@ -103,9 +126,22 @@ class DiagnosticResultPage extends StatelessWidget {
                   decoration: BoxDecoration(color: c.card, borderRadius: BorderRadius.circular(12), border: Border.all(color: c.border)),
                   child: Row(children: [
                     Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                      Text("Análisis de Severidad", style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600, color: c.text)),
+                      Text("Nivel de Alerta", style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w600, color: c.text)),
                       const SizedBox(height: 8),
-                      Text(severe ? "La infección se encuentra en una etapa crítica. Se requiere intervención inmediata." : "Infección leve-moderada. Monitoreo cercano recomendado.", style: GoogleFonts.inter(fontSize: 12, color: c.textDim, height: 1.4)),
+                      Text(
+                        noDets
+                            ? "El modelo no detectó hojas ni síntomas en la foto. Acércate a una hoja (15–20 cm), con buena luz, y vuelve a tomarla."
+                            : !hasDisease
+                            ? "No se detectaron plagas ni enfermedades. Mantener el monitoreo preventivo."
+                            : sevLabel == "ALTA"
+                                ? "Detección muy probable de $label. Revisar las plantas vecinas y actuar pronto."
+                                : sevLabel == "MEDIA"
+                                    ? "Detección probable de $label. Confirmar en campo y vigilar su avance."
+                                    : "Posible $label con baja confianza. Tomar otra foto más cercana y con buena luz.",
+                        style: GoogleFonts.inter(fontSize: 12, color: c.textDim, height: 1.4),
+                      ),
+                      const SizedBox(height: 6),
+                      Text("Según la confianza del modelo, no la extensión del daño.", style: GoogleFonts.inter(fontSize: 10, fontStyle: FontStyle.italic, color: c.textDim.withValues(alpha: 0.8))),
                     ])),
                     const SizedBox(width: 16),
                     SizedBox(width: 90, height: 90, child: Stack(alignment: Alignment.center, children: [
@@ -118,54 +154,47 @@ class DiagnosticResultPage extends StatelessWidget {
                   ]),
                 ),
                 const SizedBox(height: 16),
-                // Sección 1 — Síntomas Detectados (ancho completo)
+                // Sección 1 — Síntomas (segun la clase detectada)
                 _sectionCard(
-                  title: "Síntomas Detectados",
+                  title: hasDisease ? "Síntomas de $label" : "Estado de la Hoja",
                   icon: Icons.manage_search_rounded,
                   iconColor: c.warn,
                   c: c,
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    _bullet("Manchas necróticas irregulares de color marrón oscuro en hojas inferiores.", c),
-                    const SizedBox(height: 8),
-                    _bullet("Halo amarillento pronunciado alrededor de las lesiones.", c),
-                    const SizedBox(height: 8),
-                    _bullet("Micelio blanquecino en el envés durante la mañana.", c),
-                    const SizedBox(height: 8),
-                    _bullet("Defoliación progresiva desde la base de la planta.", c),
+                    for (final t in info.symptoms) Padding(padding: const EdgeInsets.only(bottom: 8), child: _bullet(t, c)),
                   ]),
                 ),
+                // Sección 2 — Condiciones que favorecen (conocimiento agronomico, no mediciones)
+                if (info.favorable.isNotEmpty) ...[
+                  const SizedBox(height: 16),
+                  _sectionCard(
+                    title: "Condiciones que la Favorecen",
+                    icon: Icons.cloud_rounded,
+                    iconColor: const Color(0xFFB8C3FF),
+                    c: c,
+                    child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                      for (final t in info.favorable) Padding(padding: const EdgeInsets.only(bottom: 8), child: _bullet(t, c)),
+                    ]),
+                  ),
+                ],
                 const SizedBox(height: 16),
-                // Sección 2 — Condiciones Ambientales (ancho completo)
+                // Sección 3 — Tratamientos (segun la clase detectada)
                 _sectionCard(
-                  title: "Condiciones Ambientales",
-                  icon: Icons.cloud_rounded,
-                  iconColor: const Color(0xFFB8C3FF),
-                  c: c,
-                  child: Row(children: [
-                    Expanded(child: _envBox(icon: Icons.water_drop_rounded, iconColor: c.primary, value: "92%", label: "Humedad", hint: "Crítica", c: c)),
-                    const SizedBox(width: 10),
-                    Expanded(child: _envBox(icon: Icons.thermostat_rounded, iconColor: c.warn, value: "18°C", label: "Temperatura", hint: "Óptima", c: c)),
-                    const SizedBox(width: 10),
-                    Expanded(child: _envBox(icon: Icons.air_rounded, iconColor: const Color(0xFFB8C3FF), value: "65%", label: "Viento", hint: "Moderado", c: c)),
-                  ]),
-                ),
-                const SizedBox(height: 16),
-                // Sección 3 — Tratamientos Recomendados (ancho completo)
-                _sectionCard(
-                  title: "Tratamientos Recomendados",
+                  title: hasDisease ? "Tratamientos Recomendados" : "Recomendaciones",
                   icon: Icons.healing_rounded,
                   iconColor: c.primary,
                   c: c,
                   child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-                    _treatBox(title: "Acción Orgánica / Preventiva", icon: Icons.compost_rounded, color: c.primary, items: [
-                      "Aplicación de fungicidas cúpricos (Caldo Bordelés) al 1%.",
-                      "Poda sanitaria de hojas bajeras para ventilación.",
-                    ], c: c),
+                    _treatBox(title: hasDisease ? "Manejo Cultural / Biológico" : "Prevención", icon: Icons.compost_rounded, color: c.primary, items: info.preventive, c: c),
+                    if (info.chemical.isNotEmpty) ...[
+                      const SizedBox(height: 12),
+                      _treatBox(title: "Control Químico", icon: Icons.science_rounded, color: c.danger, items: info.chemical, isChemical: true, c: c),
+                    ],
                     const SizedBox(height: 12),
-                    _treatBox(title: "Intervención Química", icon: Icons.science_rounded, color: c.danger, items: [
-                      "Fungicidas sistémicos (Metalaxil + Mancozeb).",
-                      "Respetar período de carencia de 7-14 días.",
-                    ], isChemical: true, c: c),
+                    Text(
+                      "Recomendaciones generales. Confirmar el diagnóstico y el producto con un ingeniero agrónomo y seguir la etiqueta (dosis y período de carencia).",
+                      style: GoogleFonts.inter(fontSize: 10, fontStyle: FontStyle.italic, color: c.textDim, height: 1.4),
+                    ),
                   ]),
                 ),
               ]),
@@ -179,7 +208,10 @@ class DiagnosticResultPage extends StatelessWidget {
   double _imageAspectRatio() {
     try {
       final d = img.decodeImage(imageBytes);
-      if (d != null && d.width > 0 && d.height > 0) return d.width / d.height;
+      if (d != null && d.width > 0 && d.height > 0) {
+        final o = img.bakeOrientation(d);
+        return o.width / o.height;
+      }
     } catch (_) {}
     return 4 / 3; // fallback: proporción típica de la cámara
   }
@@ -205,20 +237,6 @@ class DiagnosticResultPage extends StatelessWidget {
     const SizedBox(width: 8),
     Expanded(child: Text(text, style: GoogleFonts.inter(fontSize: 12, color: c.text, height: 1.4))),
   ]);
-
-  Widget _envBox({required IconData icon, required Color iconColor, required String value, required String label, required String hint, required AppColors c}) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(color: c.cardAlt, borderRadius: BorderRadius.circular(10), border: Border.all(color: c.border)),
-      child: Column(children: [
-        Icon(icon, color: iconColor, size: 22),
-        const SizedBox(height: 6),
-        Text(value, style: GoogleFonts.inter(fontSize: 20, fontWeight: FontWeight.w700, color: c.text)),
-        Text(label, style: GoogleFonts.inter(fontSize: 10, color: c.textDim)),
-        Text(hint, style: GoogleFonts.inter(fontSize: 10, color: iconColor, fontWeight: FontWeight.w600)),
-      ]),
-    );
-  }
 
   Widget _treatBox({required String title, required IconData icon, required Color color, required List<String> items, required AppColors c, bool isChemical = false}) {
     return Container(
@@ -254,6 +272,7 @@ class _BboxPainter extends CustomPainter {
       final y = d.bbox.yMin * size.height;
       final w = (d.bbox.xMax - d.bbox.xMin) * size.width;
       final h = (d.bbox.yMax - d.bbox.yMin) * size.height;
+      if (w <= 0 || h <= 0) continue; // sin caja (p.ej. "sana" o registro antiguo)
       final rect = Rect.fromLTWH(x, y, w, h);
 
       // Contorno negro + color

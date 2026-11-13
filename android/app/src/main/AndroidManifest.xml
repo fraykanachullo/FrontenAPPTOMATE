@@ -23,6 +23,8 @@
     <application
         android:label="AgriScan Pro"
         android:usesCleartextTraffic="true"
+        android:allowBackup="false"
+        android:fullBackupContent="false"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:requestLegacyExternalStorage="true">

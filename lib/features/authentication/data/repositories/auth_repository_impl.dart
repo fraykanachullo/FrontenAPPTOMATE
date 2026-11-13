@@ -1,8 +1,10 @@
+import 'dart:io';
 import 'dart:convert';
 import 'package:dartz/dartz.dart';
 import 'package:dio/dio.dart';
 import 'package:tomate_detection_app/core/error/failures.dart';
 import 'package:tomate_detection_app/core/network/network_info.dart';
+import 'package:tomate_detection_app/core/services/database_service.dart';
 import 'package:tomate_detection_app/features/authentication/data/datasources/auth_local_datasource.dart';
 import 'package:tomate_detection_app/features/authentication/data/datasources/auth_remote_datasource.dart';
 import 'package:tomate_detection_app/features/authentication/domain/entities/user_entity.dart';
@@ -34,7 +36,7 @@ class AuthRepositoryImpl implements IAuthRepository {
       return Right(user);
     } on DioException catch (e) {
       final code = e.response?.statusCode;
-      final msg = e.response?.data?["detail"]?.toString() ?? e.message ?? "Error login";
+      final msg = e.response?.data?["detail"]?.toString() ?? e.message ?? "Error login (${e.type.name}: ${e.error})";
       if (code == 401) return Left(AuthFailure("Credenciales inválidas"));
       if (code == 423) return Left(AuthFailure("Cuenta bloqueada, intente luego"));
       return Left(ServerFailure(msg));
@@ -72,6 +74,14 @@ class AuthRepositoryImpl implements IAuthRepository {
       await remote.logout();
     } catch (_) {}
     await local.clearTokens();
+    // Que el historial del siguiente usuario no se mezcle: se borra lo que ya esta
+    // en el servidor (se vuelve a descargar al iniciar sesion); lo pendiente se queda
+    try {
+      for (final p in await DatabaseService().deleteSynced()) {
+        final f = File(p);
+        if (await f.exists()) await f.delete();
+      }
+    } catch (_) {}
     return Right(null);
   }
 

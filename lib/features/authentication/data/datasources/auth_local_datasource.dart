@@ -21,11 +21,25 @@ class AuthLocalDataSourceImpl implements AuthLocalDataSource {
     await _storage.write(key: _kRefresh, value: refresh);
   }
 
-  @override
-  Future<String?> getAccessToken() => _storage.read(key: _kAccess);
+  // Si Android restauro una copia de seguridad, los datos cifrados no se pueden leer con la clave
+  // nueva y read() lanza una excepcion. Antes eso cortaba todas las peticiones (incluido el login).
+  // Ahora se borra lo ilegible y se sigue como si no hubiera sesion.
+  Future<String?> _leer(String key) async {
+    try {
+      return await _storage.read(key: key);
+    } catch (_) {
+      try {
+        await _storage.deleteAll();
+      } catch (_) {}
+      return null;
+    }
+  }
 
   @override
-  Future<String?> getRefreshToken() => _storage.read(key: _kRefresh);
+  Future<String?> getAccessToken() => _leer(_kAccess);
+
+  @override
+  Future<String?> getRefreshToken() => _leer(_kRefresh);
 
   @override
   Future<void> clearTokens() async {
@@ -38,5 +52,5 @@ class AuthLocalDataSourceImpl implements AuthLocalDataSource {
   Future<void> saveUserJson(String jsonStr) => _storage.write(key: _kUser, value: jsonStr);
 
   @override
-  Future<String?> getUserJson() => _storage.read(key: _kUser);
+  Future<String?> getUserJson() => _leer(_kUser);
 }

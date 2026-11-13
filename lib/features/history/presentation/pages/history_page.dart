@@ -1,8 +1,11 @@
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:tomate_detection_app/core/constants/disease_classes.dart';
 import 'package:tomate_detection_app/core/services/database_service.dart';
+import 'package:tomate_detection_app/core/services/sync_service.dart';
 import 'package:tomate_detection_app/core/theme/theme_controller.dart';
 import 'package:tomate_detection_app/features/diagnosis/presentation/pages/scanner_page.dart' show Detection, BBox;
 import 'package:tomate_detection_app/features/diagnosis/presentation/pages/diagnostic_result_page.dart';
@@ -22,19 +25,37 @@ class _HistoryPageState extends State<HistoryPage> {
   List<Map<String, dynamic>> _filtered = [];
   bool _loading = true;
 
-  final _filters = ["Todos","Oidio","Mildiu","Mosca Blanca","Pendientes","Solo Graves"];
-  final _filterMap = {"Todos": null, "Oidio":"oidio", "Mildiu":"mildiu", "Mosca Blanca":"mosca_blanca", "Pendientes":"pendiente", "Solo Graves":"grave"};
+  final _filters = ["Todos","Oidio","Mildiu","Mosca Blanca","Polilla","Por subir","Confianza alta"];
+  final _filterMap = {"Todos": null, "Oidio":"oidio", "Mildiu":"mildiu", "Mosca Blanca":"mosca_blanca", "Polilla":"polilla", "Por subir":"pendiente", "Confianza alta":"alta"};
+  bool _syncing = false;
 
   @override
-  void initState(){ super.initState(); _load(); }
+  void initState(){ super.initState(); _load(); SyncService.changes.addListener(_load); }
+
+  @override
+  void dispose(){ SyncService.changes.removeListener(_load); super.dispose(); }
+
+  // Sube lo pendiente y descarga del servidor lo que falte en este celular
+  Future<void> _syncNow() async {
+    setState(()=> _syncing=true);
+    final r = await SyncService.syncAll();
+    if(!mounted) return;
+    setState(()=> _syncing=false);
+    await _load();
+    if(!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(r == null
+        ? "No se pudo conectar con el servidor"
+        : "Subidos: ${r.$1} • Descargados: ${r.$2}")));
+  }
 
   Future<void> _load() async {
+    if(!mounted) return;
     setState(()=> _loading=true);
     try{
       _all = await _db.getDiagnostics();
       _applyFilters();
     }catch(e){ debugPrint("history $e"); }
-    setState(()=> _loading=false);
+    if(mounted) setState(()=> _loading=false);
   }
 
   void _applyFilters(){
@@ -45,12 +66,13 @@ class _HistoryPageState extends State<HistoryPage> {
     }
     if(_filter!="Todos"){
       final v=_filterMap[_filter];
-      if(v=="oidio"||v=="mildiu"||v=="mosca_blanca"){
+      if(v=="oidio"||v=="mildiu"||v=="mosca_blanca"||v=="polilla"){
         list = list.where((m)=> m['disease']==v).toList();
       } else if(v=="pendiente"){
         list = list.where((m)=> m['is_synced']==0).toList();
-      } else if(v=="grave"){
-        list = list.where((m)=> (m['confidence']??0) > 0.75).toList();
+      } else if(v=="alta"){
+        // Plagas/enfermedades detectadas con confianza alta (no mide la extension del dano)
+        list = list.where((m)=> m['disease']!='sana' && (m['confidence']??0) > 0.75).toList();
       }
     }
     if(_selectedDate!=null){
@@ -71,7 +93,6 @@ class _HistoryPageState extends State<HistoryPage> {
   }
 
   Future<void> _openDetail(Map<String,dynamic> diag) async {
-    final c = AppColors.of(context);
     // Cargar imagen
     Uint8List? bytes;
     final path=diag['image_path'] as String?;
@@ -85,11 +106,25 @@ class _HistoryPageState extends State<HistoryPage> {
       // si no hay imagen, usa placeholder color
       bytes=Uint8List.fromList(List.filled(100, 0));
     }
-    final disease=diag['disease']??'sana';
-    final conf=(diag['confidence'] as num?)?.toDouble() ?? 0.9;
-    final det=Detection(diseaseName: disease, confidence: conf, bbox: BBox(xMin: 0.15, yMin: 0.2, xMax: 0.75, yMax: 0.7), classIndex: 0);
+    // Cajas reales guardadas al escanear (antes se dibujaba una caja fija inventada)
+    final dets=<Detection>[];
+    String? source;
+    final raw=diag['detections_json'] as String?;
+    if(raw!=null && raw.isNotEmpty){
+      for(final d in (jsonDecode(raw) as List)){
+        source ??= d['source'] as String?;
+        final b=(d['bbox'] as List).map((v)=>(v as num).toDouble()).toList();
+        dets.add(Detection(diseaseName: d['label'] as String, confidence: (d['confidence'] as num).toDouble(), bbox: BBox(xMin: b[0], yMin: b[1], xMax: b[2], yMax: b[3]), classIndex: 0));
+      }
+    }
+    if(dets.isEmpty){
+      // Registros antiguos sin cajas: solo etiqueta, sin dibujar caja
+      final disease=diag['disease']??'sana';
+      final conf=(diag['confidence'] as num?)?.toDouble() ?? 0.9;
+      dets.add(Detection(diseaseName: disease, confidence: conf, bbox: BBox(xMin: 0, yMin: 0, xMax: 0, yMax: 0), classIndex: 0));
+    }
     if(!mounted) return;
-    Navigator.push(context, MaterialPageRoute(builder: (_)=> DiagnosticResultPage(imageBytes: bytes!, detections: [det], displayNames: const {'mildiu':'Mildiu','oidio':'Oídio','mosca_blanca':'Mosca Blanca','polilla':'Polilla','sana':'Hoja Sana'}, colors: {'mildiu':c.danger,'oidio':const Color(0xFFF59E0B),'mosca_blanca':const Color(0xFFEAB308),'polilla':const Color(0xFFFF0000),'sana':c.primary})));
+    Navigator.push(context, MaterialPageRoute(builder: (_)=> DiagnosticResultPage(imageBytes: bytes!, detections: dets, displayNames: DiseaseClasses.labels, colors: DiseaseClasses.colors, source: source)));
   }
 
   Map<String, List<Map<String,dynamic>>> _groupByDate(){
@@ -124,7 +159,9 @@ class _HistoryPageState extends State<HistoryPage> {
         leading: IconButton(icon: Icon(Icons.menu_rounded, color: c.primary), onPressed: (){}),
         title: Text("Historial de Escaneos", style: GoogleFonts.inter(fontSize: 16, fontWeight: FontWeight.w700, color: c.primary)),
         centerTitle: true,
-        actions: [IconButton(icon: Icon(Icons.sync_rounded, color: c.primary), onPressed: _load)],
+        actions: [_syncing
+            ? Padding(padding: const EdgeInsets.all(14), child: SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2, color: c.primary)))
+            : IconButton(tooltip: "Sincronizar con el servidor", icon: Icon(Icons.cloud_sync_rounded, color: c.primary), onPressed: _syncNow)],
         bottom: PreferredSize(preferredSize: const Size.fromHeight(1), child: Container(height: 1, color: c.border)),
       ),
       body: _loading ? Center(child: CircularProgressIndicator(color: c.primary)) : RefreshIndicator(color: c.primary, onRefresh: _load, child: ListView(padding: const EdgeInsets.fromLTRB(16, 16, 16, 100), children: [
@@ -198,13 +235,19 @@ class _HistoryPageState extends State<HistoryPage> {
     final disease=diag['disease']??'sana';
     final conf=(diag['confidence'] as num?)?.toDouble() ?? 0.0;
     final date=DateTime.tryParse(diag['created_at']??"") ?? DateTime.now();
-    final displayName={'mildiu':'Mildiu - Phytophthora','oidio':'Oidio','mosca_blanca':'Mosca Blanca','polilla':'Polilla','sana':'Hoja Sana'}[disease] ?? disease;
-    final isSevere=conf>0.75;
-    final isModerate=conf>0.55 && conf<=0.75;
-    final badgeColor=isSevere? c.danger: isModerate? const Color(0xFFFC7C78): const Color(0xFFFBBF24);
-    final badgeBg=isSevere? c.danger.withValues(alpha: 0.15): isModerate? const Color(0xFFFC7C78).withValues(alpha: 0.15): const Color(0xFFFBBF24).withValues(alpha: 0.15);
-    final statusLabel=isSevere? "Severo": isModerate? "Moderado": disease=='sana'? "Sano":"Leve";
-    final treated = diag['is_synced']==1;
+    final raw=diag['detections_json'] as String?;
+    final nDets=(raw!=null && raw.isNotEmpty) ? (jsonDecode(raw) as List).length : (conf>0 ? 1 : 0);
+    // Sin cajas: el modelo no encontro sintomas (ni hojas sanas); no es "100 % sana"
+    final noDets=nDets==0;
+    final sick=disease!='sana';
+    final displayName=noDets? 'Sin detecciones' : ({'mildiu':'Mildiu - Phytophthora','oidio':'Oidio','mosca_blanca':'Mosca Blanca','polilla':'Polilla','sana':'Hoja Sana'}[disease] ?? disease);
+    // La etiqueta es la confianza del modelo, no la severidad del dano
+    final isHigh=sick && conf>0.75;
+    final isMedium=sick && conf>0.55 && conf<=0.75;
+    final badgeColor=!sick? c.primary: isHigh? c.danger: isMedium? const Color(0xFFFC7C78): const Color(0xFFFBBF24);
+    final badgeBg=badgeColor.withValues(alpha: 0.15);
+    final statusLabel=noDets? "Sin síntomas": !sick? "Sano": isHigh? "Confianza alta": isMedium? "Confianza media":"Confianza baja";
+    final synced = diag['is_synced']==1; // subido al servidor
     final imagePath=diag['image_path'] as String?;
     final hasImage=imagePath!=null && File(imagePath).existsSync();
 
@@ -219,21 +262,21 @@ class _HistoryPageState extends State<HistoryPage> {
           Stack(children: [
             ClipRRect(borderRadius: BorderRadius.circular(8), child: hasImage ? Image.file(File(imagePath!), width: 80, height: 80, fit: BoxFit.cover, errorBuilder: (_,__,___)=> _iconPlaceholder(context, disease)) : _iconPlaceholder(context, disease)),
             if(disease!='sana') Positioned.fill(child: Container(decoration: BoxDecoration(borderRadius: BorderRadius.circular(8), border: Border.all(color: c.danger.withValues(alpha: 0.8), width: 2)))),
-            if(conf>0) Positioned(bottom: 4, right: 4, child: Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: c.bg.withValues(alpha: 0.85), borderRadius: BorderRadius.circular(6)), child: Text("${(conf*100).toStringAsFixed(1)}%", style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w700, color: c.primary)))),
+            if(conf>0 && !noDets) Positioned(bottom: 4, right: 4, child: Container(padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2), decoration: BoxDecoration(color: c.bg.withValues(alpha: 0.85), borderRadius: BorderRadius.circular(6)), child: Text("${(conf*100).toStringAsFixed(1)}%", style: GoogleFonts.inter(fontSize: 9, fontWeight: FontWeight.w700, color: c.primary)))),
           ]),
           const SizedBox(width: 12),
           Expanded(child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
             Row(mainAxisAlignment: MainAxisAlignment.spaceBetween, children: [
               Expanded(child: Text(displayName, style: GoogleFonts.inter(fontSize: 13, fontWeight: FontWeight.w600, color: c.text), maxLines: 1, overflow: TextOverflow.ellipsis)),
-              Icon(disease=='sana'? Icons.check_circle_rounded: isSevere? Icons.error_rounded: Icons.warning_amber_rounded, color: disease=='sana'? c.primary: badgeColor, size: 18),
+              Icon(!sick? Icons.check_circle_rounded: isHigh? Icons.error_rounded: Icons.warning_amber_rounded, color: badgeColor, size: 18),
             ]),
             const SizedBox(height: 2),
-            Text("Sector ${diag['diagnostic_id']?.toString().substring(0,2) ?? "A"} • ${_hhmm(date)}", style: GoogleFonts.inter(fontSize: 11, color: c.textDim)),
+            Text("${_hhmm(date)} • $nDets ${nDets==1 ? 'detección' : 'detecciones'}", style: GoogleFonts.inter(fontSize: 11, color: c.textDim)),
             const SizedBox(height: 8),
             Row(children: [
               Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: badgeBg, borderRadius: BorderRadius.circular(6)), child: Text(statusLabel, style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w700, color: badgeColor))),
               const SizedBox(width: 6),
-              Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: treated? c.primary.withValues(alpha: 0.15): c.border, borderRadius: BorderRadius.circular(6), border: treated? null: Border.all(color: c.border)), child: Text(treated? "Tratado":"Pendiente", style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: treated? c.primary: c.textDim))),
+              Container(padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4), decoration: BoxDecoration(color: synced? c.primary.withValues(alpha: 0.15): c.border, borderRadius: BorderRadius.circular(6), border: synced? null: Border.all(color: c.border)), child: Row(mainAxisSize: MainAxisSize.min, children: [Icon(synced? Icons.cloud_done_rounded: Icons.cloud_upload_outlined, size: 12, color: synced? c.primary: c.textDim), const SizedBox(width: 4), Text(synced? "Sincronizado":"Por subir", style: GoogleFonts.inter(fontSize: 10, fontWeight: FontWeight.w600, color: synced? c.primary: c.textDim))])),
             ]),
           ])),
         ]),

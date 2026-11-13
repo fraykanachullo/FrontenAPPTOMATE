@@ -1,6 +1,10 @@
+import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'package:camera/camera.dart';
+import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
@@ -8,11 +12,27 @@ import 'package:image/image.dart' as img;
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:uuid/uuid.dart';
-import 'package:tomate_detection_app/core/services/api_service.dart';
+import 'package:tomate_detection_app/core/constants/disease_classes.dart';
+import 'package:tomate_detection_app/core/constants/model_info.dart';
 import 'package:tomate_detection_app/core/services/database_service.dart';
+import 'package:tomate_detection_app/core/services/local_detector.dart';
+import 'package:tomate_detection_app/features/diagnosis/data/datasources/diagnostic_remote_datasource.dart';
+import 'package:tomate_detection_app/injection_container.dart' as di;
 import 'package:tomate_detection_app/core/services/location_service.dart';
 import 'package:tomate_detection_app/models/diagnosis_model.dart';
 import 'diagnostic_result_page.dart';
+
+// Aplica la rotacion EXIF y limita a 1280px. Esta misma imagen se muestra,
+// se envia al backend y se guarda en historial, asi las cajas siempre coinciden.
+Uint8List _normalizePhoto(Uint8List bytes) {
+  final d = img.decodeImage(bytes);
+  if (d == null) return bytes;
+  var o = img.bakeOrientation(d);
+  if (o.width > 1280 || o.height > 1280) {
+    o = o.width >= o.height ? img.copyResize(o, width: 1280) : img.copyResize(o, height: 1280);
+  }
+  return Uint8List.fromList(img.encodeJpg(o, quality: 90));
+}
 
 // Escaneo en Tiempo Real — Producción listo: viewfinder vivo + overlay YOLO + HUD
 class ScannerPage extends StatefulWidget {
@@ -37,32 +57,19 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
 
   // Tiempo real
   bool _streamActive = false;
-  DateTime? _lastFrame;
   bool _inferBusy = false;
-  int _latencyMs = 9;
+  int _latencyMs = 0;
+  // Proporcion (ancho/alto) de la imagen sobre la que se dibujan las cajas y si
+  // se muestra recortada (vista previa, cover) o completa (foto capturada, contain)
+  double _detAspect = 3 / 4;
+  bool _detCover = true;
 
-  final _api = ApiService();
   final _db = DatabaseService();
   final _picker = ImagePicker();
   final _uuid = const Uuid();
 
-  static const _classColors = {
-    'mildiu': Color(0xFFEF4444),
-    'oidio': Color(0xFFF59E0B),
-    'mosca_blanca': Color(0xFFEAB308),
-    'mosca blanca': Color(0xFFEAB308),
-    'sana': Color(0xFF10B981),
-    'sano': Color(0xFF10B981),
-    'healthy': Color(0xFF10B981),
-  };
-  static const _labels = {
-    'mildiu': 'Mildiu',
-    'oidio': 'Oidio',
-    'mosca_blanca': 'Mosca Blanca',
-    'mosca blanca': 'Mosca Blanca',
-    'sana': 'Sano',
-    'sano': 'Sano',
-  };
+  static const _classColors = DiseaseClasses.colors;
+  static const _labels = DiseaseClasses.labels;
 
   String _luxText = "Luz Adecuada";
   Color _luxColor = const Color(0xFF4EDEA3);
@@ -72,6 +79,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    LocalDetector.instance.warmUp(); // carga el modelo offline mientras abre la camara
     _init();
   }
 
@@ -103,7 +111,8 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         _cameras[_cameraIndex],
         ResolutionPreset.high,
         enableAudio: false,
-        imageFormatGroup: ImageFormatGroup.bgra8888,
+        // Android entrega YUV420 en el stream; bgra8888 solo existe en iOS
+        imageFormatGroup: Platform.isAndroid ? ImageFormatGroup.yuv420 : ImageFormatGroup.bgra8888,
       );
       await _controller!.initialize();
       if (!mounted) return;
@@ -120,43 +129,43 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     }
   }
 
-  // Inferencia continua (throttle cada 1.2s) -> overlay en vivo sobre el preview
+  // Deteccion en vivo en el celular sobre los cuadros de la camara. Mientras un
+  // cuadro se analiza los siguientes se descartan (va tan rapido como el celular).
   void _startStream() {
     final c = _controller;
-    if (c == null || !c.value.isInitialized || !c.value.isStreamingImages) return;
+    if (c == null || !c.value.isInitialized || c.value.isStreamingImages || _showResult) return;
     _streamActive = true;
-    _lastFrame = DateTime.now();
+    final cam = c.description;
     c.startImageStream((frame) async {
-      if (!_streamActive || _inferBusy) return;
-      final now = DateTime.now();
-      if (_lastFrame != null && now.difference(_lastFrame!) < const Duration(milliseconds: 1200)) return;
-      _lastFrame = now;
+      if (!_streamActive || _inferBusy || LocalDetector.instance.isBusy) return;
       _inferBusy = true;
       try {
-        final jpg = await _toJpeg(frame);
-        if (jpg == null) return;
-        final tmp = await getTemporaryDirectory();
-        final f = File('${tmp.path}/rt.jpg');
-        await f.writeAsBytes(jpg);
         final sw = Stopwatch()..start();
-        final res = await _api.detectDisease(XFile(f.path));
-        final ms = sw.elapsedMilliseconds;
-        await f.delete();
-        if (!mounted || !_streamActive) return;
-        if (res['status'] == 'success') {
-          final items = (res['data']['detections'] as List? ?? []);
-          final dets = items.map((d) {
-            final b = d['bbox'] as List;
-            final x = (b[0] as num).toDouble();
-            final y = (b[1] as num).toDouble();
-            return {
-              'rect': [x, y, (b[2] as num).toDouble() - x, (b[3] as num).toDouble() - y],
-              'label': d['disease'] as String,
-              'confidence': (d['confidence'] as num) / 100.0,
-            };
-          }).toList().cast<Map<String, dynamic>>();
-          setState(() { _dets = dets; _latencyMs = ms; });
+        final List<Map<String, dynamic>> dets;
+        if (frame.format.group == ImageFormatGroup.yuv420 && frame.planes.length == 3) {
+          dets = await LocalDetector.instance.detectYuv(
+            width: frame.width,
+            height: frame.height,
+            planes: [for (final p in frame.planes) Uint8List.fromList(p.bytes)],
+            rowStrides: [for (final p in frame.planes) p.bytesPerRow],
+            pixelStrides: [for (final p in frame.planes) p.bytesPerPixel ?? 1],
+            rotation: cam.sensorOrientation,
+            mirror: cam.lensDirection == CameraLensDirection.front,
+          );
+        } else {
+          final jpg = await _toJpeg(frame);
+          if (jpg == null) return;
+          dets = await LocalDetector.instance.detect(jpg);
         }
+        final ms = sw.elapsedMilliseconds;
+        if (!mounted || !_streamActive) return;
+        final rotated = cam.sensorOrientation % 180 == 90;
+        setState(() {
+          _dets = dets;
+          _latencyMs = ms;
+          _detAspect = rotated ? frame.height / frame.width : frame.width / frame.height;
+          _detCover = true;
+        });
       } catch (e) {
         debugPrint("RT: $e");
       } finally {
@@ -167,9 +176,12 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
 
   void _stopStream() {
     _streamActive = false;
-    try { _controller?.stopImageStream(); } catch (_) {}
+    try {
+      if (_controller?.value.isStreamingImages ?? false) _controller?.stopImageStream();
+    } catch (_) {}
   }
 
+  // iOS (bgra8888)
   Future<Uint8List?> _toJpeg(CameraImage im) async {
     try {
       final p = im.planes[0];
@@ -185,7 +197,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
         buf = packed.buffer;
       }
       final src = img.Image.fromBytes(width: w, height: h, bytes: buf, order: img.ChannelOrder.bgra);
-      return Uint8List.fromList(img.encodeJpg(img.copyResize(src, width: 480), quality: 60));
+      return Uint8List.fromList(img.encodeJpg(img.copyResize(src, width: 640), quality: 80));
     } catch (e) {
       return null;
     }
@@ -212,10 +224,11 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
 
   Future<void> _fromGallery() async {
     if (_busy) return;
-    setState(() => _busy = true);
+    _stopStream(); // que el analisis en vivo no pise las cajas de la foto elegida
+    setState(() { _busy = true; _dets = []; });
     try {
       final f = await _picker.pickImage(source: ImageSource.gallery, imageQuality: 85);
-      if (f == null) { setState(() => _busy = false); return; }
+      if (f == null) { setState(() => _busy = false); _startStream(); return; }
       final bytes = await f.readAsBytes();
       await _checkLux(bytes);
       await _analyze(bytes, DateTime.now());
@@ -224,28 +237,24 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
     }
   }
 
-  Future<void> _analyze(List<int> bytes, DateTime t0) async {
+  Future<void> _analyze(List<int> rawBytes, DateTime t0) async {
     try {
-      setState(() { _captured = Uint8List.fromList(bytes); _showResult = true; });
-      final tmp = await getTemporaryDirectory();
-      final f = File('${tmp.path}/diag.jpg');
-      await f.writeAsBytes(bytes);
+      final bytes = await compute(_normalizePhoto, Uint8List.fromList(rawBytes));
+      final dims = img.decodeJpg(bytes);
+      setState(() {
+        _captured = bytes;
+        _showResult = true;
+        _dets = [];
+        if (dims != null) _detAspect = dims.width / dims.height;
+        _detCover = false;
+      });
       LocationService.getCurrentPosition();
-      final res = await _api.detectDisease(XFile(f.path));
+      final p = await _saveLocal(bytes);
+      final (dets, source, serverId) = await _detect(p, bytes);
       final ms = DateTime.now().difference(t0).inMilliseconds;
       setState(() => _latencyMs = ms > 0 ? ms : 9);
-      if (res['status'] == 'success') {
-        final items = (res['data']['detections'] as List? ?? []);
-        final dets = items.map((d) {
-          final b = d['bbox'] as List;
-          final x = (b[0] as num).toDouble();
-          final y = (b[1] as num).toDouble();
-          return {
-            'rect': [x, y, (b[2] as num).toDouble() - x, (b[3] as num).toDouble() - y],
-            'label': d['disease'] as String,
-            'confidence': (d['confidence'] as num) / 100.0,
-          };
-        }).toList().cast<Map<String, dynamic>>();
+      {
+        dets.sort((a, b) => (b['confidence'] as double).compareTo(a['confidence'] as double));
         setState(() => _dets = dets);
 
         final dbDets = dets.map((m) {
@@ -257,21 +266,30 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
             classIndex: 0,
           );
         }).toList();
+        // Sin detecciones: sin sintomas detectados, sin caja ni confianza (no es "100 % sana")
         final list = dbDets.isEmpty
-            ? [Detection(diseaseName: 'sana', confidence: 1.0, bbox: BBox(xMin: 0, yMin: 0, xMax: 1, yMax: 1), classIndex: 4)]
+            ? [Detection(diseaseName: 'sana', confidence: 0.0, bbox: BBox(xMin: 0, yMin: 0, xMax: 0, yMax: 0), classIndex: 4)]
             : dbDets;
-        final p = await _saveLocal(bytes);
-        for (final d in list) {
-          await _db.saveDiagnostic(DiagnosisModel(diagnosticId: _uuid.v4(), imagePath: p, disease: d.diseaseName, confidence: d.confidence, createdAt: DateTime.now()).toMap());
-        }
+        // Un registro por escaneo, con todas las cajas reales para el historial
+        final primary = list.firstWhere((d) => d.diseaseName != 'sana', orElse: () => list.first);
+        final detJson = jsonEncode(dbDets.map((d) => {
+          'label': d.diseaseName,
+          'confidence': d.confidence,
+          'bbox': [d.bbox.xMin, d.bbox.yMin, d.bbox.xMax, d.bbox.yMax],
+          'source': source,
+        }).toList());
+        await _db.saveDiagnostic(DiagnosisModel(diagnosticId: _uuid.v4(), imagePath: p, disease: primary.diseaseName, confidence: primary.confidence, createdAt: DateTime.now(), detectionsJson: detJson,
+            // Analizado en el servidor = ya guardado alla; en el celular = pendiente de subir
+            isSynced: source == 'servidor', serverId: serverId).toMap());
         if (mounted) {
           await Future.delayed(const Duration(milliseconds: 500));
           if (!mounted) return;
           await Navigator.push(context, MaterialPageRoute(builder: (_) => DiagnosticResultPage(
-            imageBytes: Uint8List.fromList(bytes),
+            imageBytes: bytes,
             detections: list,
             displayNames: _labels,
             colors: _classColors,
+            source: source,
           )));
           _reset();
           return;
@@ -282,6 +300,37 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
       setState(() => _busy = false);
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text("Error: $e"), backgroundColor: Colors.red));
     }
+  }
+
+  // Offline-first: con conexion usa el servidor (modelo completo, queda guardado
+  // con el usuario via /api/v1 + JWT); si no hay red, el servidor no responde o
+  // falla, analiza en el celular con TFLite y queda pendiente de sincronizar.
+  Future<(List<Map<String, dynamic>>, String, String?)> _detect(String imagePath, Uint8List bytes) async {
+    final net = await Connectivity().checkConnectivity();
+    final online = net != ConnectivityResult.none; // connectivity_plus 5.x: un solo resultado
+    if (online && InferenceSettings.mode == 'auto') {
+      try {
+        final res = await di.sl<DiagnosticRemoteDataSource>().sendDiagnostic(imagePath, {
+          'timestamp_utc': DateTime.now().toUtc().toIso8601String(),
+          'analysis_source': 'servidor',
+        });
+        final items = (res['detections'] as List? ?? []);
+        final dets = items.map((d) {
+          final b = d['bounding_box'] as Map<String, dynamic>;
+          final x = (b['x_min'] as num).toDouble();
+          final y = (b['y_min'] as num).toDouble();
+          return <String, dynamic>{
+            'rect': [x, y, (b['x_max'] as num).toDouble() - x, (b['y_max'] as num).toDouble() - y],
+            'label': d['disease_label'] as String,
+            'confidence': (d['confidence_score'] as num).toDouble(),
+          };
+        }).toList();
+        return (dets, 'servidor', res['diagnostic_id'] as String?);
+      } catch (e) {
+        debugPrint('Servidor no disponible, usando modelo local: $e');
+      }
+    }
+    return (await LocalDetector.instance.detect(bytes), 'celular', null);
   }
 
   Future<String> _saveLocal(List<int> bytes) async {
@@ -385,7 +434,7 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
 
         // Capa 2 — Overlay YOLO (sobre preview o captura)
         if (_dets.isNotEmpty)
-          Positioned.fill(child: IgnorePointer(child: CustomPaint(painter: YoloOverlayPainter(_dets)))),
+          Positioned.fill(child: IgnorePointer(child: CustomPaint(painter: YoloOverlayPainter(_dets, aspect: _detAspect, cover: _detCover)))),
 
         // Guía foliar punteada
         if (!_showResult)
@@ -419,10 +468,10 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
               Row(children: [
                 Container(width: 8, height: 8, decoration: const BoxDecoration(color: Color(0xFF4EDEA3), shape: BoxShape.circle)),
                 const SizedBox(width: 6),
-                Text("$_latencyMs ms (Edge AI)", style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF4EDEA3))),
+                Text(_latencyMs > 0 ? "En vivo • $_latencyMs ms por cuadro" : "En vivo • cargando modelo…", style: GoogleFonts.inter(fontSize: 11, fontWeight: FontWeight.w600, color: Color(0xFF4EDEA3))),
               ]),
               const SizedBox(height: 4),
-              Text("Clases: Oidio • Mildiu • Mosca Blanca", style: GoogleFonts.inter(fontSize: 9, color: Color(0xFFBBCABF))),
+              Text("Mildiu • Oídio • Mosca blanca • Polilla", style: GoogleFonts.inter(fontSize: 9, color: Color(0xFFBBCABF))),
             ]),
           )),
           const Spacer(),
@@ -467,57 +516,53 @@ class _ScannerPageState extends State<ScannerPage> with WidgetsBindingObserver {
 }
 
 // Capa 2 — CustomPainter de cajas YOLO
+// Las cajas vienen normalizadas 0..1 respecto a la imagen; se proyectan segun
+// como se muestra: recortada para llenar la pantalla (cover, vista previa en vivo)
+// o completa con bordes (contain, foto capturada).
 class YoloOverlayPainter extends CustomPainter {
   final List<Map<String, dynamic>> detections;
-  YoloOverlayPainter(this.detections);
-
-  static const _colors = {
-    'mildiu': Color(0xFFEF4444),
-    'oidio': Color(0xFFF59E0B),
-    'mosca_blanca': Color(0xFFEAB308),
-    'mosca blanca': Color(0xFFEAB308),
-    'sana': Color(0xFF10B981),
-    'sano': Color(0xFF10B981),
-    'healthy': Color(0xFF10B981),
-  };
-  static const _names = {
-    'mildiu': 'Mildiu',
-    'oidio': 'Oidio',
-    'mosca_blanca': 'Mosca Blanca',
-    'mosca blanca': 'Mosca Blanca',
-    'sana': 'Sano',
-    'sano': 'Sano',
-  };
+  final double aspect;
+  final bool cover;
+  YoloOverlayPainter(this.detections, {required this.aspect, required this.cover});
 
   @override
   void paint(Canvas canvas, Size size) {
+    final screenAspect = size.width / size.height;
+    final wider = screenAspect > aspect;
+    final dw = (cover == wider) ? size.width : size.height * aspect;
+    final dh = (cover == wider) ? size.width / aspect : size.height;
+    final ox = (size.width - dw) / 2, oy = (size.height - dh) / 2;
+
     for (final det in detections) {
       final r = det['rect'] as List;
       final lk = (det['label'] as String).toLowerCase();
       final conf = (det['confidence'] as double?) ?? 0;
-      final color = _colors[lk] ?? const Color(0xFF4EDEA3);
-      final x = (r[0] as num).toDouble() * size.width;
-      final y = (r[1] as num).toDouble() * size.height;
-      final w = (r[2] as num).toDouble() * size.width;
-      final h = (r[3] as num).toDouble() * size.height;
-      final rect = Rect.fromLTWH(x, y, w, h);
+      final color = DiseaseClasses.colors[lk] ?? const Color(0xFF4EDEA3);
+      final rect = Rect.fromLTWH(
+        ox + (r[0] as num).toDouble() * dw,
+        oy + (r[1] as num).toDouble() * dh,
+        (r[2] as num).toDouble() * dw,
+        (r[3] as num).toDouble() * dh,
+      );
 
       canvas.drawRect(rect, Paint()..color = Colors.black..style = PaintingStyle.stroke..strokeWidth = 4.5);
       canvas.drawRect(rect, Paint()..color = color..style = PaintingStyle.stroke..strokeWidth = 2.5);
 
-      final text = "${_names[lk] ?? lk} ${(conf * 100).toStringAsFixed(0)}%";
+      final text = "${DiseaseClasses.labels[lk] ?? lk} ${(conf * 100).toStringAsFixed(0)}%";
       final tp = TextPainter(
         text: TextSpan(text: text, style: GoogleFonts.roboto(fontSize: 11, fontWeight: FontWeight.w700, color: Colors.black)),
         textDirection: TextDirection.ltr,
       )..layout();
-      final br = RRect.fromRectAndRadius(Rect.fromLTWH(rect.left, rect.top - 18, tp.width + 10, 16), const Radius.circular(4));
+      final top = math.max(0.0, rect.top - 18);
+      final br = RRect.fromRectAndRadius(Rect.fromLTWH(rect.left, top, tp.width + 10, 16), const Radius.circular(4));
       canvas.drawRRect(br, Paint()..color = color);
-      tp.paint(canvas, Offset(rect.left + 5, rect.top - 15));
+      tp.paint(canvas, Offset(rect.left + 5, top + 3));
     }
   }
 
   @override
-  bool shouldRepaint(covariant YoloOverlayPainter old) => old.detections != detections;
+  bool shouldRepaint(covariant YoloOverlayPainter old) =>
+      old.detections != detections || old.aspect != aspect || old.cover != cover;
 }
 
 // Guía foliar punteada + esquinas

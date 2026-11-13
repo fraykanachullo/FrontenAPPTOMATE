@@ -1,9 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:tomate_detection_app/core/constants/app_constants.dart';
-import 'package:tomate_detection_app/core/services/database_service.dart';
-import 'package:tomate_detection_app/features/authentication/data/models/user_model.dart';
-import 'package:uuid/uuid.dart';
+import 'package:tomate_detection_app/features/authentication/domain/repositories/i_auth_repository.dart';
+import 'package:tomate_detection_app/injection_container.dart' as di;
 
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key});
@@ -17,8 +16,7 @@ class _RegisterPageState extends State<RegisterPage> {
   final _emailController = TextEditingController();
   final _orgController = TextEditingController();
   final _passwordController = TextEditingController();
-  final DatabaseService _dbService = DatabaseService();
-  final Uuid _uuid = const Uuid();
+  final IAuthRepository _authRepo = di.sl<IAuthRepository>();
   bool _obscurePassword = true;
   bool _isLoading = false;
 
@@ -293,25 +291,18 @@ class _RegisterPageState extends State<RegisterPage> {
         return;
       }
 
-      final exists = await _dbService.userExists(_emailController.text.trim());
-      if (exists) {
-        _showError('Este correo ya está registrado');
+      // Registro en el backend (antes se guardaba solo en SQLite local)
+      final result = await _authRepo.register(
+        _nameController.text.trim(),
+        _emailController.text.trim(),
+        _passwordController.text,
+        'FIELD_TECH',
+      );
+      final error = result.fold((f) => f.message, (_) => null);
+      if (error != null) {
+        _showError(error);
         return;
       }
-
-      final user = UserModel(
-        id: _uuid.v4(),
-        name: _nameController.text.trim(),
-        email: _emailController.text.trim(),
-        password: _passwordController.text,
-        organization: _orgController.text.trim().isNotEmpty
-            ? _orgController.text.trim()
-            : null,
-        role: 'agricultor',
-        createdAt: DateTime.now(),
-      );
-
-      await _dbService.saveUser(user);
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(

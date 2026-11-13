@@ -1,6 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:tomate_detection_app/features/authentication/data/datasources/auth_local_datasource.dart';
+import 'package:tomate_detection_app/features/authentication/data/models/user_model.dart';
+import 'package:tomate_detection_app/injection_container.dart' as di;
 
 // Stitch: bg-gradient-to-b from-[#0F4C3A] to-[#121212], card bg-surface/10 border white/10
 class SplashPage extends StatefulWidget {
@@ -21,9 +25,35 @@ class _SplashPageState extends State<SplashPage> with SingleTickerProviderStateM
     _fade = CurvedAnimation(parent: _ctrl, curve: Curves.easeOut);
     _slide = Tween<Offset>(begin: const Offset(0, 0.15), end: Offset.zero).animate(CurvedAnimation(parent: _ctrl, curve: Curves.easeOut));
     _ctrl.forward();
-    Timer(const Duration(seconds: 2), () {
-      if (mounted) Navigator.pushReplacementNamed(context, '/login');
-    });
+    Timer(const Duration(seconds: 2), _route);
+  }
+
+  // Sesion guardada: si hay token de renovacion y usuario en el celular se entra
+  // directo (funciona sin internet). El token se renueva solo al usar el servidor.
+  Future<void> _route() async {
+    final local = di.sl<AuthLocalDataSource>();
+    UserModel? user;
+    try {
+      final refresh = await local.getRefreshToken();
+      final json = await local.getUserJson();
+      if (refresh != null && refresh.isNotEmpty && json != null) {
+        final u = jsonDecode(json) as Map<String, dynamic>;
+        user = UserModel(
+          id: u['id'].toString(),
+          name: u['name'] ?? '',
+          email: u['email'] ?? '',
+          password: '',
+          role: u['role'],
+          createdAt: DateTime.tryParse(u['created_at']?.toString() ?? '') ?? DateTime.now(),
+        );
+      }
+    } catch (_) {}
+    if (!mounted) return;
+    if (user != null) {
+      Navigator.pushReplacementNamed(context, '/home', arguments: user);
+    } else {
+      Navigator.pushReplacementNamed(context, '/login');
+    }
   }
 
   @override
